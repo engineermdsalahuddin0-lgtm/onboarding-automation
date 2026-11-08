@@ -1,0 +1,8 @@
+# Not needed to build or run on Vercel. src/assets/cv and recruitment-data hold real applicants' data.
+archive/
+tests/
+recruitment-data/
+src/assets/cv/
+.claude/
+dist/
+dist-server/

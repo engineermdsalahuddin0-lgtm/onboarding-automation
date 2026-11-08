@@ -1,0 +1,6 @@
+{
+  "name": "Onboarding Automation & Recruitment Suite",
+  "description": "End-to-end recruitment pipeline, requisition tracking, interactive CV folders, AI CV parsing, calling & messaging, multi-stage interviews, and automated joining day document generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,206 @@
+@import "@fontsource-variable/plus-jakarta-sans";
+@import "tailwindcss";
+
+@source not "../archive";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* Neutral taupe from the Bitopi tab logo. */
+  --color-ink: #1f1c18;
+  --color-ink-soft: #57524a;
+  --color-ink-muted: #6f6a61;
+  --color-line: #e4e0d8;
+  --color-line-strong: #cfc9bd;
+  --color-surface: #ffffff;
+  --color-canvas: #f8f7f4;
+  --color-hover: #f1efea;
+
+  /* Green from the "50 Years & Beyond" logo, darkened so white text passes contrast. */
+  --color-brand-50: #eff8ea;
+  --color-brand-100: #dcefd0;
+  --color-brand-300: #9fd382;
+  --color-brand-500: #5cae35;
+  --color-brand-600: #3f8a22;
+  --color-brand-700: #336f1c;
+  --color-brand-900: #1f4411;
+}
+
+html {
+  color: var(--color-ink);
+  background: var(--color-canvas);
+}
+
+button,
+[role="button"],
+summary,
+label[for],
+select {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand-600);
+  outline-offset: 2px;
+}
+
+/* Native <dialog> modals and side drawers */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  background: rgb(31 28 24 / 0.45);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+/* The two thumbs of a range slider. Only the thumbs take the pointer, so each stays draggable under the other's track. */
+.range-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  pointer-events: none;
+}
+
+.range-thumb::-webkit-slider-runnable-track {
+  height: 0.25rem;
+  background: transparent;
+}
+
+.range-thumb::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-block-start: calc((0.25rem - 14px) / 2);
+  border: 2px solid var(--color-brand-600);
+  border-radius: 50%;
+  background: var(--color-surface);
+  box-shadow: 0 1px 2px rgb(31 28 24 / 0.25);
+  cursor: grab;
+  pointer-events: auto;
+}
+
+.range-thumb::-moz-range-track {
+  height: 0.25rem;
+  background: transparent;
+}
+
+.range-thumb::-moz-range-thumb {
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-brand-600);
+  border-radius: 50%;
+  background: var(--color-surface);
+  box-shadow: 0 1px 2px rgb(31 28 24 / 0.25);
+  cursor: grab;
+  pointer-events: auto;
+}
+
+.range-thumb:focus-visible {
+  outline: none;
+}
+
+.range-thumb:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--color-brand-600);
+  outline-offset: 2px;
+}
+
+.range-thumb:focus-visible::-moz-range-thumb {
+  outline: 2px solid var(--color-brand-600);
+  outline-offset: 2px;
+}
+
+/* Only flag invalid fields after the user has touched them */
+input:user-invalid,
+select:user-invalid,
+textarea:user-invalid {
+  border-color: #b3261e;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Printed letters */
+.paper {
+  width: 210mm;
+  min-height: 297mm;
+  padding: 16mm 18mm;
+  background: white;
+  color: black;
+  font-size: 11pt;
+  line-height: 1.5;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.fill-line {
+  display: inline-block;
+  min-width: 42mm;
+  border-bottom: 1px solid #000;
+  height: 1em;
+}
+
+@page {
+  size: A4;
+  margin: 14mm 16mm;
+}
+
+@media print {
+  html,
+  body {
+    background: white;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  /* Block layout, so every document fills the page width instead of shrinking to its content. */
+  .print-root {
+    display: block !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: white !important;
+  }
+
+  /* A long form flows onto extra pages rather than being cut off. */
+  .paper {
+    width: auto;
+    min-height: 0;
+    padding: 0;
+    box-shadow: none !important;
+    border: 0 !important;
+    margin: 0 !important;
+    break-after: page;
+  }
+
+  .paper:last-child {
+    break-after: auto;
+  }
+
+  .paper tr,
+  .paper .keep-together {
+    break-inside: avoid;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

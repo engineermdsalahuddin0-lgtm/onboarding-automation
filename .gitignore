@@ -1,0 +1,18 @@
+node_modules/
+build/
+dist/
+dist-server/
+coverage/
+public/vendor/
+tests/.tmp/
+.DS_Store
+*.log
+.env*
+!.env.example
+.vercel/
+# Real applicants' CVs and mail data: keep them out of any repository Vercel deploys from.
+src/assets/cv/
+recruitment-data/
+
+# Local assistant settings: not part of the app.
+.claude/
