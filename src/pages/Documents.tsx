@@ -219,7 +219,7 @@ export function DocumentsPage() {
   useEffect(() => {
     if (candidate) document.title = `Joining pack - ${candidate.full_name}`;
     return () => {
-      document.title = 'Bitopi Group · Onboarding Suite';
+      document.title = 'Bitopi Group · Recruitment Management Suite';
     };
   }, [candidate]);
 

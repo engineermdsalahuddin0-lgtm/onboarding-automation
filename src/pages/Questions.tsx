@@ -440,7 +440,7 @@ export function QuestionPaperPage() {
   useEffect(() => {
     document.title = title;
     return () => {
-      document.title = 'Bitopi Group · Onboarding Suite';
+      document.title = 'Bitopi Group · Recruitment Management Suite';
     };
   }, [title]);
 

@@ -47,7 +47,7 @@ async function start() {
   }
 
   const port = Number(process.env.PORT) || 3000;
-  app.listen(port, () => console.log(`Onboarding Suite running on http://localhost:${port}`));
+  app.listen(port, () => console.log(`Recruitment Management Suite running on http://localhost:${port}`));
 }
 
 void start();

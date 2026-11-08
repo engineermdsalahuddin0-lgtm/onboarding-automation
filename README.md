@@ -1,4 +1,4 @@
-# Bitopi Group Onboarding Suite
+# Bitopi Group Recruitment Management Suite
 
 Hiring and onboarding from vacancy to joining day: requisitions, job postings, CV buckets, shortlisting,
 calls, interview schedules, two interview rounds, the final decision, candidate reviews, the selected-candidate
@@ -39,6 +39,12 @@ build refuses to run without a database.
 7. Sign in and fill in **Settings > Company**, especially who signs the offer letter.
 
 To add staff: create them in Supabase as in step 5, then choose their role under **Settings > Team**.
+
+**Sample data, for showing the app.** After schema.sql and the three accounts, run
+[supabase/sample-data.sql](supabase/sample-data.sql) in the SQL Editor: fictional positions, CV buckets, 23 candidates at
+every step, the team's history, feedback and 12 library questions, linked to the real accounts by email (change the three
+emails at its top if yours differ). Dates move to the day it runs. [supabase/remove-sample-data.sql](supabase/remove-sample-data.sql)
+takes exactly that out again. Both are made from the demo data by `node --import tsx scripts/make-sample-sql.ts`.
 Forgotten passwords are reset from the same Supabase page.
 
 | Role | Can do |

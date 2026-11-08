@@ -61,6 +61,12 @@ function watch(page, label) {
   });
 }
 
+// A person's first visit starts the dashboard tour; these checks are not about it, so it is skipped.
+async function skipTour(page) {
+  const skip = page.getByRole('button', { name: 'Skip tour' });
+  await skip.waitFor({ timeout: 5000 }).then(() => skip.click(), () => undefined);
+}
+
 async function signIn(page, email, password) {
   await page.getByLabel('Email').fill(email);
   await page.getByLabel('Password').fill(password);
@@ -106,6 +112,7 @@ async function main() {
   check('Wrong password is refused', true);
   await signIn(page, 'admin@bitopi.test', 'admin-pass');
   await page.getByRole('heading', { name: 'Dashboard' }).waitFor();
+  await skipTour(page);
   check('First account signs in as admin', (await supabase.db.query("select role from public.profiles where email = 'admin@bitopi.test'")).rows[0].role === 'admin');
   check('No demo banner in production', await page.getByText('Demo mode').count() === 0);
   await page.screenshot({ path: join(shots, 'prod-01-empty-dashboard.png'), fullPage: true });
@@ -532,6 +539,7 @@ async function main() {
 
   await signIn(page, 'viewer@bitopi.test', 'viewer-pass');
   await page.getByRole('heading', { name: 'Dashboard' }).waitFor();
+  await skipTour(page);
   check('Viewer has no upload button', await page.getByRole('button', { name: 'Upload CVs' }).count() === 0);
   await page.goto(`${BASE}/buckets`);
   await page.getByRole('link', { name: /Jr\. Executive/ }).click();
@@ -548,6 +556,7 @@ async function main() {
 
   await signIn(page, 'hr@bitopi.test', 'hr-pass');
   await page.getByRole('heading', { name: 'Dashboard' }).waitFor();
+  await skipTour(page);
   await page.goto(`${BASE}/settings`);
   await page.getByText('Only an admin can change these settings.').waitFor();
   check('HR cannot change company settings', await page.getByRole('button', { name: 'Save company settings' }).count() === 0);

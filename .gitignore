@@ -16,3 +16,4 @@ recruitment-data/
 
 # Local assistant settings: not part of the app.
 .claude/
+.env

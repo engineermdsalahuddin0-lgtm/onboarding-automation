@@ -1,4 +1,4 @@
--- Bitopi Group Onboarding Suite: full database setup.
+-- Bitopi Group Recruitment Management Suite: full database setup.
 -- Run once in Supabase dashboard > SQL Editor. Safe to re-run: every statement is idempotent.
 
 -- ---------------------------------------------------------------------------
@@ -1316,3 +1316,6 @@ begin
   end if;
 end;
 $$;
+
+-- Tells the API about new tables and columns at once, so the app does not report one as missing.
+notify pgrst, 'reload schema';

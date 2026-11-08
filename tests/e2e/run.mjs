@@ -85,25 +85,26 @@ async function main() {
   await heading('Dashboard').waitFor();
   check('Dashboard opens', true);
 
-  // --- First visit: a welcome with a guided tour of the dashboard
-  const welcome = page.getByRole('region', { name: 'Getting started' });
-  await welcome.waitFor();
-  check('A new person is offered a tour', await welcome.getByRole('button', { name: 'Show me around' }).count() === 1);
-  await shot('00a-welcome');
-  await welcome.getByRole('button', { name: 'Show me around' }).click();
+  // --- First visit: the tour of the dashboard starts by itself
   const tourStep = page.getByRole('dialog', { name: 'Pages' });
   await tourStep.waitFor();
+  check('A new person gets the tour without asking', (await tourStep.innerText()).includes('Welcome, Tareq!'));
   check('The tour starts by pointing at the page menu', /1 of \d+/i.test(await tourStep.innerText()));
+  check('The tour can be skipped from the start', await tourStep.getByRole('button', { name: 'Skip tour' }).count() === 1);
+  await shot('00a-welcome-tour');
   await tourStep.getByRole('button', { name: /Next/ }).click();
   await page.getByRole('dialog', { name: 'Find anyone' }).waitFor();
   await page.keyboard.press('ArrowRight');
   await page.getByRole('dialog', { name: 'Upload CVs' }).waitFor();
   check('Next and the arrow keys move through the tour', true);
   await shot('00b-tour-step');
-  await page.keyboard.press('Escape');
+  await page.getByRole('dialog', { name: 'Upload CVs' }).getByRole('button', { name: 'Skip tour' }).click();
   await page.getByRole('dialog', { name: 'Upload CVs' }).waitFor({ state: 'detached' });
-  check('Esc ends the tour', true);
-  check('The welcome does not come back once used', await welcome.count() === 0);
+  check('Skip tour ends it', true);
+  await page.reload();
+  await heading('Dashboard').waitFor();
+  await page.waitForTimeout(1200);
+  check('The tour does not start again once seen', await page.getByRole('button', { name: 'Skip tour' }).count() === 0);
 
   // --- Help: the whole flow, and "Show me" opens a real example with the card's tour
   await page.getByRole('button', { name: 'Help and guided tour' }).click();
@@ -1082,6 +1083,12 @@ async function main() {
   await nafis.getByRole('button', { name: 'Sign out' }).click();
   await nafis.getByRole('list', { name: 'Demo accounts' }).getByRole('button', { name: /Nafis/ }).click();
   await nafis.getByRole('heading', { name: 'Dashboard' }).waitFor();
+  // Nafis is new on this computer too, so his tour starts; it skips the steps that are not his, such as uploading.
+  const nafisTour = nafis.getByRole('dialog', { name: 'Pages' });
+  await nafisTour.waitFor();
+  check('Each new person gets their own welcome tour', (await nafisTour.innerText()).includes('Welcome, Nafis!'));
+  await nafisTour.getByRole('button', { name: 'Skip tour' }).click();
+  await nafisTour.waitFor({ state: 'detached' });
   check('Nafis sees the candidates handed to him', await nafis.getByText('Handed to you').count() === 1);
   check('The process desk has no Upload CVs button', await nafis.getByRole('button', { name: 'Upload CVs' }).count() === 0);
   await nafis.screenshot({ path: join(shots, '15-nafis-dashboard.png'), fullPage: true });

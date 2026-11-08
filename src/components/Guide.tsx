@@ -30,8 +30,8 @@ export function HelpTip({ label, children, side }: { label: string; children: Re
 // Tours
 // ---------------------------------------------------------------------------
 interface GuideValue {
-  /** Starts a tour of the page or of the open card. */
-  startTour: (id: TourId) => void;
+  /** Starts a tour of the page or of the open card. A welcome line, if given, heads the first step. */
+  startTour: (id: TourId, welcome?: string) => void;
   openHelp: () => void;
 }
 
@@ -40,9 +40,9 @@ const GuideContext = createContext<GuideValue>({ startTour: () => undefined, ope
 export const useGuide = () => useContext(GuideContext);
 
 export function GuideProvider({ children }: { children: ReactNode }) {
-  const [tour, setTour] = useState<{ id: TourId; key: number } | null>(null);
+  const [tour, setTour] = useState<{ id: TourId; key: number; welcome?: string } | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
-  const startTour = useCallback((id: TourId) => setTour({ id, key: Date.now() }), []);
+  const startTour = useCallback((id: TourId, welcome?: string) => setTour({ id, key: Date.now(), welcome }), []);
   const openHelp = useCallback(() => setHelpOpen(true), []);
   const endTour = useCallback(() => setTour(null), []);
   const value = useMemo(() => ({ startTour, openHelp }), [startTour, openHelp]);
@@ -50,7 +50,7 @@ export function GuideProvider({ children }: { children: ReactNode }) {
     <GuideContext.Provider value={value}>
       {children}
       {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} onTour={(id) => { setHelpOpen(false); startTour(id); }} />}
-      {tour && <Tour key={tour.key} id={tour.id} onClose={endTour} />}
+      {tour && <Tour key={tour.key} id={tour.id} welcome={tour.welcome} onClose={endTour} />}
     </GuideContext.Provider>
   );
 }
@@ -66,25 +66,42 @@ const findTarget = (name: string): HTMLElement | null => {
 const POPOVER_WIDTH = 340;
 const PAD = 6;
 
-function popoverStyle(rect: DOMRect | null): CSSProperties {
-  const width = Math.min(POPOVER_WIDTH, window.innerWidth - 24);
-  if (!rect) return { width, left: (window.innerWidth - width) / 2, top: window.innerHeight / 3 };
-  const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
-  const below = window.innerHeight - rect.bottom > 230 || rect.top < 230;
-  return below
-    ? { width, left, top: Math.min(rect.bottom + PAD + 8, window.innerHeight - 220) }
-    : { width, left, bottom: window.innerHeight - rect.top + PAD + 8 };
+const GAP = PAD + 8;
+
+/** Beside a tall target, else below or above it, and always wholly on screen, using the box's real height. */
+function popoverStyle(rect: DOMRect | null, height: number): CSSProperties {
+  const screenWidth = window.innerWidth;
+  const screenHeight = window.innerHeight;
+  const width = Math.min(POPOVER_WIDTH, screenWidth - 24);
+  const fit = (top: number) => Math.max(12, Math.min(top, screenHeight - height - 12));
+  if (!rect) return { width, left: (screenWidth - width) / 2, top: fit(screenHeight / 3) };
+  // The side menu runs the full height: there is no room above or below it.
+  if (rect.height > screenHeight / 2) {
+    const left = rect.right + GAP + width <= screenWidth - 12 ? rect.right + GAP : Math.max(12, rect.left - GAP - width);
+    return { width, left, top: fit(rect.top + 40) };
+  }
+  const left = Math.max(12, Math.min(rect.left, screenWidth - width - 12));
+  if (screenHeight - rect.bottom >= height + GAP + 12) return { width, left, top: rect.bottom + GAP };
+  if (rect.top >= height + GAP + 12) return { width, left, top: rect.top - GAP - height };
+  return { width, left, top: fit(rect.bottom + GAP) };
 }
 
 /** Points at one thing at a time, with a short explanation. Esc or Close ends it; arrow keys move. */
-function Tour({ id, onClose }: { id: TourId; onClose: () => void }) {
+function Tour({ id, welcome, onClose }: { id: TourId; welcome?: string; onClose: () => void }) {
   const toast = useToast();
   const { title, steps: all } = TOURS[id];
   const [steps, setSteps] = useState<TourStep[] | null>(null);
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const [height, setHeight] = useState(220);
   const box = useRef<HTMLDivElement>(null);
   const host = useRef<Element>(document.body);
+
+  // The box grows with its text, so its height is measured after each change before it is placed.
+  useLayoutEffect(() => {
+    const measured = box.current?.offsetHeight;
+    if (measured && measured !== height) setHeight(measured);
+  });
 
   // A page that just opened may still be drawing: wait a moment for what the tour points at.
   useEffect(() => {
@@ -175,7 +192,7 @@ function Tour({ id, onClose }: { id: TourId; onClose: () => void }) {
         aria-labelledby="tour-step-title"
         aria-describedby="tour-step-body"
         className="fixed rounded-xl border border-line bg-surface p-4 text-ink shadow-2xl"
-        style={popoverStyle(rect)}
+        style={popoverStyle(rect, height)}
       >
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -184,12 +201,14 @@ function Tour({ id, onClose }: { id: TourId; onClose: () => void }) {
           </div>
           <IconButton label="Close the tour" icon={X} onClick={onClose} />
         </div>
+        {welcome && index === 0 && <p className="mt-1.5 rounded-lg bg-brand-50 px-2.5 py-1.5 text-sm text-brand-900">{welcome}</p>}
         <p id="tour-step-body" className="mt-1.5 text-sm leading-relaxed text-ink-soft">{step.body}</p>
         <div className="mt-3 flex items-center justify-between gap-2">
           <span className="flex gap-1" aria-hidden>
             {steps.map((s, i) => <span key={s.target} className={i === index ? 'size-1.5 rounded-full bg-brand-600' : 'size-1.5 rounded-full bg-line-strong'} />)}
           </span>
           <span className="flex gap-2">
+            {!last && <Button size="sm" variant="ghost" onClick={onClose}>Skip tour</Button>}
             {index > 0 && <Button size="sm" icon={ArrowLeft} onClick={() => setIndex(index - 1)}>Back</Button>}
             <Button data-tour-next size="sm" variant="primary" onClick={() => (last ? onClose() : setIndex(index + 1))}>
               {last ? 'Done' : <>Next <ArrowRight className="size-3.5" aria-hidden /></>}
@@ -268,31 +287,27 @@ export function HelpButton() {
 
 const WELCOME_KEY = 'guide-welcome-done:';
 
-/** Shown once per person on the dashboard: a way into the tour and the flow. */
+/**
+ * The first time a person reaches the dashboard, the tour starts by itself. Skip, Close, Esc or a click outside
+ * ends it, and it does not start again on this computer; the ? at the top brings it back any time.
+ */
 export function WelcomeGuide() {
   const { user } = useStore();
-  const { startTour, openHelp } = useGuide();
-  const key = `${WELCOME_KEY}${user?.id ?? ''}`;
-  const [done, setDone] = useState(() => localStorage.getItem(key) === '1');
-  if (done || !user) return null;
-  const dismiss = () => {
-    localStorage.setItem(key, '1');
-    setDone(true);
-  };
-  return (
-    <section aria-label="Getting started" className="mb-4 rounded-xl border border-brand-300 bg-brand-50 p-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <Compass className="size-5 shrink-0 text-brand-700" aria-hidden />
-        <div className="min-w-56 flex-1">
-          <p className="text-sm font-semibold">New here, {user.full_name || 'welcome'}?</p>
-          <p className="text-sm text-ink-soft">A one-minute tour shows how to use the dashboard, the CV bank, the job application link, and how to accept or reject applicants. The ? at the top brings it back any time.</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="primary" icon={Compass} onClick={() => { dismiss(); startTour('dashboard'); }}>Show me around</Button>
-          <Button icon={Route} onClick={() => { dismiss(); openHelp(); }}>The hiring flow</Button>
-          <Button variant="ghost" onClick={dismiss}>Not now</Button>
-        </div>
-      </div>
-    </section>
-  );
+  const { startTour } = useGuide();
+  const userId = user?.id;
+  const name = (user?.full_name || '').split(' ')[0];
+
+  useEffect(() => {
+    if (!userId) return;
+    const key = `${WELCOME_KEY}${userId}`;
+    if (localStorage.getItem(key) === '1') return;
+    // Marked when it starts, not before: a page that redraws at once must not use up the first visit.
+    const timer = setTimeout(() => {
+      localStorage.setItem(key, '1');
+      startTour('dashboard', `Welcome${name ? `, ${name}` : ''}! A one-minute tour of the app. Press Skip tour to close it; the ? at the top brings it back any time.`);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [userId, name, startTour]);
+
+  return null;
 }

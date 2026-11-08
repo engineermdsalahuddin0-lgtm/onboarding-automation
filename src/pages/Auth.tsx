@@ -73,7 +73,7 @@ export function LoginPage() {
 
   return (
     <Shell>
-      <h1 className="text-center text-lg font-semibold">Onboarding Suite</h1>
+      <h1 className="text-center text-lg font-semibold">Recruitment Management Suite</h1>
       <p className="mt-1 mb-5 text-center text-sm text-ink-soft">
         {isDemo ? 'Demo mode: choose who you are. No password needed.' : 'Sign in with your HR account.'}
       </p>

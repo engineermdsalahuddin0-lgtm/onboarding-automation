@@ -54,8 +54,9 @@ function Sidebar() {
       >
         <Link to="/" onClick={focusMain} className="flex h-14 shrink-0 items-center gap-3 px-3.5" aria-label="Bitopi Group, go to dashboard">
           <img src={tabLogo} alt="" className="size-9 shrink-0 rounded-md object-contain" />
-          <span className="truncate text-sm font-semibold whitespace-nowrap opacity-0 transition-opacity group-hover:opacity-100 group-has-focus-visible:opacity-100">
-            Onboarding Suite
+          {/* A fixed width, so the name breaks into the same two lines while the panel opens. */}
+          <span className="w-36 shrink-0 text-sm leading-tight font-semibold opacity-0 transition-opacity group-hover:opacity-100 group-has-focus-visible:opacity-100">
+            Recruitment Management Suite
           </span>
         </Link>
         <ul className="flex flex-1 flex-col gap-1 px-2.5 pt-2">

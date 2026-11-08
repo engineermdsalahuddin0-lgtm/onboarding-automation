@@ -489,6 +489,47 @@ describe('CV upload limits', () => {
   });
 });
 
+describe('sample data for a real project', () => {
+  const count = async (table: string) => Number((await db.query<{ n: number }>(`select count(*)::int as n from public.${table}`)).rows[0].n);
+  const sample = readFileSync(new URL('../supabase/sample-data.sql', import.meta.url), 'utf8');
+
+  it('refuses to run before the three accounts exist', async () => {
+    await expect(db.exec(sample)).rejects.toThrow(/Create the three accounts first/);
+  });
+
+  it('loads under the real rules, links to the real accounts, runs twice harmlessly, and comes out cleanly', async () => {
+    const people = [['00000000-0000-4000-8000-0000000000b1', 'tareq@bitopibd.com', 'Tareq Azij'], ['00000000-0000-4000-8000-0000000000b2', 'nafis@bitopibd.com', 'Nafis'], ['00000000-0000-4000-8000-0000000000b3', 'mili@bitopibd.com', 'Mili']];
+    for (const [id, email, name] of people) {
+      await db.query(`insert into auth.users (id, email, raw_user_meta_data) values ($1, $2, jsonb_build_object('full_name', $3::text))`, [id, email, name]);
+    }
+    const before = { candidates: await count('candidates'), notifications: await count('notifications'), questions: await count('questions') };
+    await db.exec(sample);
+    expect(await count('candidates')).toBe(before.candidates + 23);
+    expect(await count('questions')).toBe(before.questions + 12);
+    const mahmud = (await db.query<any>(`select c.final_decision, c.assigned_to, b.designation from candidates c join cv_buckets b on b.id = c.bucket_id where c.full_name = 'Mahmud Karim'`)).rows[0];
+    expect(mahmud).toMatchObject({ final_decision: 'confirmed', designation: 'HR Tech & Automation Specialist', assigned_to: [people[2][0]] });
+    // The history and alerts are the sample's own, not "received by the company form" for everyone.
+    const events = (await db.query<any>(`select actor_name, actor_id from candidate_events e join candidates c on c.id = e.candidate_id where c.full_name = 'Rahim Uddin' order by e.created_at`)).rows;
+    expect(events[0]).toEqual({ actor_name: 'Tareq Azij', actor_id: people[0][0] });
+    expect(await count('notifications')).toBe(before.notifications + 7);
+    expect((await db.query<any>(`select count(*)::int as n from notifications where recipient_id = $1`, [people[0][0]])).rows[0].n).toBe(2);
+    // Review time is added up once, through the sessions.
+    // (Earlier tests left other people of the same name, without review time.)
+    expect((await db.query<any>(`select review_seconds from candidates where full_name = 'Rahim Uddin' and review_seconds > 0`)).rows.map((r) => r.review_seconds)).toEqual([375]);
+
+    await db.exec(sample);
+    expect(await count('candidates')).toBe(before.candidates + 23);
+
+    // A requisition made in the app afterwards takes the next free number.
+    const [req] = await as(HR, `insert into requisitions (designation) values ('After sample') returning ref_no`);
+    expect(req.ref_no).toMatch(/-0005$|-00[1-9]\d$/);
+
+    await db.exec(readFileSync(new URL('../supabase/remove-sample-data.sql', import.meta.url), 'utf8'));
+    expect(await count('candidates')).toBe(before.candidates);
+    expect(await count('questions')).toBe(before.questions);
+  });
+});
+
 describe('app rows match the database columns', () => {
   it('accepts every demo row, so the shared types and the schema cannot drift apart', async () => {
     const data = buildDemoData();
