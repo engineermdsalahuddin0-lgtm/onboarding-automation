@@ -1,4 +1,4 @@
-import { CheckCircle2, FileUp, Loader2, Plus, Star, Trash2 } from 'lucide-react';
+import { CheckCircle2, FileUp, Loader2, LockKeyhole, Plus, Star, Trash2, type LucideIcon } from 'lucide-react';
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import fullLogo from '../assets/images/Bitopi_Logo_Final.png';
@@ -21,10 +21,10 @@ function PublicShell({ children }: { children: ReactNode }) {
   );
 }
 
-function Message({ title, children }: { title: string; children?: ReactNode }) {
+function Message({ title, children, icon: Icon = CheckCircle2 }: { title: string; children?: ReactNode; icon?: LucideIcon }) {
   return (
     <div className="rounded-2xl border border-line bg-surface px-6 py-12 text-center">
-      <CheckCircle2 className="mx-auto mb-3 size-10 text-brand-600" aria-hidden />
+      <Icon className={`mx-auto mb-3 size-10 ${Icon === CheckCircle2 ? 'text-brand-600' : 'text-ink-muted'}`} aria-hidden />
       <h1 className="text-lg font-semibold">{title}</h1>
       {children && <p className="mt-1 text-sm text-ink-soft">{children}</p>}
     </div>
@@ -360,6 +360,15 @@ export function ReviewFormPage() {
   if (invite === undefined) return <PublicShell><Spinner /></PublicShell>;
   if (invite === null) return <PublicShell><div className="rounded-2xl border border-line bg-surface px-6 py-12 text-center text-sm">This link is not valid.</div></PublicShell>;
   if (done || invite.submitted) return <PublicShell><Message title="Thank you for your feedback">It helps {invite.group_name} treat every candidate better.</Message></PublicShell>;
+  if (invite.open === false) {
+    return (
+      <PublicShell>
+        <Message title="This feedback link has closed" icon={LockKeyhole}>
+          The {invite.stage === 'primary' ? 'primary' : 'final'} interview for {invite.designation} has moved on to its next step, so this link no longer takes answers.
+        </Message>
+      </PublicShell>
+    );
+  }
 
   return (
     <PublicShell>

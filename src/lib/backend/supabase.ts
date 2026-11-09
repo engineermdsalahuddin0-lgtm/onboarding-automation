@@ -101,6 +101,13 @@ export function createSupabaseBackend(url: string, anonKey: string): Backend {
       if (error) throw new BackendError(error.message);
     },
 
+    async removeFiles(paths) {
+      for (let i = 0; i < paths.length; i += 500) {
+        const { error } = await client.storage.from(BUCKET).remove(paths.slice(i, i + 500));
+        if (error) throw new BackendError(error.message);
+      }
+    },
+
     async signedUrls(paths) {
       if (paths.length === 0) return {};
       const { data, error } = await client.storage.from(BUCKET).createSignedUrls(paths, SIGNED_URL_SECONDS);

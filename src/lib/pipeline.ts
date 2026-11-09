@@ -1,4 +1,4 @@
-import type { Candidate, CallStatus, InterviewerScore, InterviewStatus, JoiningStatus, SelectionCategory } from '../types';
+import type { Candidate, CallStatus, EditStep, InterviewerScore, InterviewStatus, JoiningStatus, SelectionCategory } from '../types';
 import { dayMonth, time12 } from './format';
 
 export type Tone = 'neutral' | 'info' | 'progress' | 'warning' | 'good' | 'bad';
@@ -311,6 +311,8 @@ export function recordJoiningCall(opts: {
   callTime: string;
   confirmedDate: string | null;
   confirmedTime: string;
+  /** What HR noted on the call. Left as it was when not given. */
+  remarks?: string;
 }): Partial<Candidate> {
   return {
     joining_call_date: opts.callDate,
@@ -318,6 +320,7 @@ export function recordJoiningCall(opts: {
     joining_confirmed_date: opts.confirmedDate || null,
     joining_confirmed_time: opts.confirmedDate ? opts.confirmedTime : '',
     joining_status: opts.confirmedDate ? 'accepted' : 'offer_sent',
+    ...(opts.remarks !== undefined ? { joining_remarks: opts.remarks.trim() } : {}),
   };
 }
 
@@ -477,6 +480,79 @@ export function processSteps(c: ProcessFields): ProcessStep[] {
     detail: stand === -1 || index <= stand ? detail : '',
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Corrections: a recorded step is corrected after an admin approves. Mirrors edit_step_fields in schema.sql.
+// ---------------------------------------------------------------------------
+
+export const EDIT_STEP_LABELS: Record<EditStep, string> = {
+  call: 'Call',
+  primary_schedule: 'Primary schedule',
+  primary: 'Primary interview',
+  final_schedule: 'Final schedule',
+  final: 'Final interview',
+  decision: 'Final decision',
+};
+
+/** The details each step records. A correction changes only these, never where the candidate stands. */
+export const EDIT_STEP_FIELDS: Record<EditStep, (keyof Candidate)[]> = {
+  call: ['call_date', 'call_time', 'confirmed_date', 'confirmed_time', 'call_rejected_date', 'call_rejected_time', 'followup_on', 'followup_time', 'call_note'],
+  primary_schedule: ['primary_date', 'primary_time', 'message_channel'],
+  primary: ['primary_panel', 'primary_score', 'primary_interviewer', 'primary_feedback'],
+  final_schedule: ['secondary_date', 'secondary_time'],
+  final: ['secondary_panel', 'secondary_score', 'secondary_interviewer', 'secondary_feedback'],
+  decision: ['decision_date', 'decision_time', 'informed_date', 'informed_time', 'joining_date', 'joining_time'],
+};
+
+/** The steps of this candidate that hold a recorded result, so there is something to correct. */
+export function correctableSteps(c: PipelineFields): EditStep[] {
+  const steps: EditStep[] = [];
+  if (c.call_status !== 'pending') steps.push('call');
+  if (c.message_status === 'message_done') steps.push('primary_schedule');
+  if (c.primary_status === 'selected' || c.primary_status === 'rejected') steps.push('primary');
+  if (c.secondary_status !== 'pending') steps.push('final_schedule');
+  if (c.secondary_status === 'selected' || c.secondary_status === 'rejected') steps.push('final');
+  if (c.final_decision) steps.push('decision');
+  return steps;
+}
+
+/** Only the fields of the step that differ from the candidate's current values. */
+export function correctionChanges(step: EditStep, c: Candidate, draft: Partial<Candidate>): Partial<Candidate> {
+  const changes: Partial<Candidate> = {};
+  for (const field of EDIT_STEP_FIELDS[step]) {
+    if (!(field in draft)) continue;
+    if (JSON.stringify(draft[field] ?? null) !== JSON.stringify(c[field] ?? null)) {
+      (changes as Record<string, unknown>)[field] = draft[field];
+    }
+  }
+  return changes;
+}
+
+// ---------------------------------------------------------------------------
+// Feedback links: shared before or after the interview, open until the candidate moves on.
+// Mirrors review_is_open in schema.sql.
+// ---------------------------------------------------------------------------
+
+export type ReviewStage = 'primary' | 'secondary';
+
+export function isReviewOpen(c: Pick<Candidate, 'message_status' | 'secondary_status' | 'final_decision'>, stage: ReviewStage): boolean {
+  return stage === 'primary'
+    ? c.message_status === 'message_done' && c.secondary_status === 'pending'
+    : c.secondary_status !== 'pending' && c.final_decision === null;
+}
+
+/** The interview whose feedback link works right now, if any. */
+export function openReviewStage(c: Pick<Candidate, 'message_status' | 'secondary_status' | 'final_decision'>): ReviewStage | null {
+  if (isReviewOpen(c, 'secondary')) return 'secondary';
+  if (isReviewOpen(c, 'primary')) return 'primary';
+  return null;
+}
+
+/** When the link stops working, in words. */
+export const REVIEW_CLOSES: Record<ReviewStage, string> = {
+  primary: 'until the final interview is scheduled',
+  secondary: 'until the final decision is made',
+};
 
 /** Position in the process, for sorting: later steps sort after earlier ones. */
 export function processPosition(c: ProcessFields): number {

@@ -208,6 +208,29 @@ create table if not exists public.job_postings (
   created_at timestamptz not null default now()
 );
 
+-- The group's units (CHO, TAL, BGL, RHL, MGL), each with its departments, sections and subsections:
+-- [{"code": "RHL", "name": "...", "departments": [{"name": "ESG", "code": "RHL-ESG",
+--   "sections": [{"name": "EMS", "subsections": ["EMS"]}]}]}]. Edited under Settings > Units and departments.
+alter table public.settings add column if not exists org_structure jsonb not null default '[]';
+
+-- Where a position sits, and the columns of the company's vacancy status sheet, so the sheet can be synced in.
+alter table public.requisitions add column if not exists unit text not null default '';
+alter table public.requisitions add column if not exists section text not null default '';
+alter table public.requisitions add column if not exists subsection text not null default '';
+-- New, Replacement, or both; and for a replacement, who left (name and ID as written).
+alter table public.requisitions add column if not exists vacancy_type text not null default '';
+alter table public.requisitions add column if not exists replacing text not null default '';
+alter table public.requisitions add column if not exists requisition_date date;
+alter table public.requisitions add column if not exists approved_on date;
+alter table public.requisitions add column if not exists offer_date date;
+alter table public.requisitions add column if not exists expected_joining date;
+alter table public.requisitions add column if not exists selected_names text not null default '';
+alter table public.requisitions add column if not exists remarks text not null default '';
+-- A row synced from the vacancy sheet: its key (the sheet's SL) and the sheet's own numbers, kept as written.
+alter table public.requisitions add column if not exists sheet_key text;
+alter table public.requisitions add column if not exists sheet_data jsonb not null default '{}';
+create unique index if not exists requisitions_sheet_key_idx on public.requisitions (sheet_key);
+
 -- ---------------------------------------------------------------------------
 -- Block B: CV buckets and the candidate pipeline
 -- ---------------------------------------------------------------------------
@@ -226,6 +249,10 @@ create table if not exists public.cv_buckets (
   created_by uuid default auth.uid(),
   created_at timestamptz not null default now()
 );
+
+alter table public.cv_buckets add column if not exists unit text not null default '';
+alter table public.cv_buckets add column if not exists section text not null default '';
+alter table public.cv_buckets add column if not exists subsection text not null default '';
 
 create table if not exists public.candidates (
   id uuid primary key default gen_random_uuid(),
@@ -366,6 +393,8 @@ alter table public.candidates add column if not exists assigned_to uuid[] not nu
 alter table public.candidates add column if not exists handover_note text not null default '';
 alter table public.candidates add column if not exists handed_over_by text not null default '';
 alter table public.candidates add column if not exists handed_over_at timestamptz;
+-- What HR noted on the joining call: a condition the candidate set, why the day moved, anything worth keeping.
+alter table public.candidates add column if not exists joining_remarks text not null default '';
 
 -- A panel's score is the average of its interviewers, so it can be a fraction.
 alter table public.candidates alter column primary_score type numeric(4, 1);
@@ -525,10 +554,35 @@ create trigger cv_review_sessions_stamp
 -- A confirmation letter or a final rejection locks the process, whatever a client sends. Only an admin
 -- can unlock it, by clearing the decision. Joining paperwork and the joining outcome stay editable.
 -- With no signed-in user (the SQL Editor), nothing is enforced, so a database owner can still repair data.
+-- The details each step records, which an approved correction of that step may change. Never a status:
+-- a correction fixes what was written down, not where the candidate stands.
+create or replace function public.edit_step_fields(p_step text)
+returns text[] language sql immutable set search_path = '' as $$
+  select case p_step
+    when 'call' then array['call_date', 'call_time', 'confirmed_date', 'confirmed_time', 'call_rejected_date', 'call_rejected_time', 'followup_on', 'followup_time', 'call_note']
+    when 'primary_schedule' then array['primary_date', 'primary_time', 'message_channel']
+    when 'primary' then array['primary_panel', 'primary_score', 'primary_interviewer', 'primary_feedback']
+    when 'final_schedule' then array['secondary_date', 'secondary_time']
+    when 'final' then array['secondary_panel', 'secondary_score', 'secondary_interviewer', 'secondary_feedback']
+    when 'decision' then array['decision_date', 'decision_time', 'informed_date', 'informed_time', 'joining_date', 'joining_time']
+    else array[]::text[]
+  end
+$$;
+
+create or replace function public.edit_step_label(p_step text)
+returns text language sql immutable set search_path = '' as $$
+  select case p_step
+    when 'call' then 'Call' when 'primary_schedule' then 'Primary schedule' when 'primary' then 'Primary interview'
+    when 'final_schedule' then 'Final schedule' when 'final' then 'Final interview' when 'decision' then 'Final decision'
+    else p_step
+  end
+$$;
+
 create or replace function public.protect_final_decision()
 returns trigger language plpgsql set search_path = '' as $$
 declare
   field_name text;
+  grant_step text;
   locked_fields text[] := array[
     'screening_status', 'call_status', 'call_date', 'call_time', 'confirmed_date', 'confirmed_time', 'call_rejected_date', 'call_rejected_time',
     'message_status', 'primary_status', 'primary_date', 'primary_time', 'primary_panel', 'primary_score',
@@ -546,8 +600,16 @@ begin
     end if;
     raise exception 'Only an admin can unlock a final decision.';
   end if;
+  -- A correction an admin approved, applied through apply_edit, may change its own step's details and nothing else.
+  -- The request has to be approved, for this candidate, and asked for by whoever is signed in.
+  if coalesce(current_setting('app.edit_grant', true), '') <> '' then
+    select r.step into grant_step from public.edit_requests r
+      where r.id = current_setting('app.edit_grant', true)::uuid
+        and r.candidate_id = new.id and r.requested_by = auth.uid() and r.status = 'approved';
+  end if;
   foreach field_name in array locked_fields loop
-    if (to_jsonb(old) ->> field_name) is distinct from (to_jsonb(new) ->> field_name) then
+    if (to_jsonb(old) ->> field_name) is distinct from (to_jsonb(new) ->> field_name)
+       and not (grant_step is not null and field_name = any (public.edit_step_fields(grant_step))) then
       raise exception 'This candidate''s process is locked. An admin has to unlock it first.';
     end if;
   end loop;
@@ -579,7 +641,7 @@ declare
     'secondary_interviewer', 'secondary_score', 'secondary_feedback', 'secondary_panel', 'selection_category',
     'final_decision', 'decision_date', 'decision_time', 'informed_date', 'informed_time', 'decided_by', 'decided_at',
     'joining_status', 'joining_date', 'joining_time', 'joining_call_date', 'joining_call_time',
-    'joining_confirmed_date', 'joining_confirmed_time', 'offered_salary', 'employee_code', 'probation_period',
+    'joining_confirmed_date', 'joining_confirmed_time', 'joining_remarks', 'offered_salary', 'employee_code', 'probation_period',
     'reporting_to', 'documents_received', 'offer_sent_at'
   ];
 begin
@@ -865,6 +927,176 @@ create trigger job_postings_notify
   for each row execute function public.notify_new_posting();
 
 -- ---------------------------------------------------------------------------
+-- Corrections: a step recorded wrongly is corrected only after an admin (GM, AGM, DGM) approves.
+-- HR asks with a reason; an admin approves or turns it down; the person who asked then corrects that one
+-- step once, even after the final decision locked the process. Every request and correction stays on record.
+-- Written only through the functions below, never directly.
+-- ---------------------------------------------------------------------------
+create table if not exists public.edit_requests (
+  id uuid primary key default gen_random_uuid(),
+  candidate_id uuid not null references public.candidates (id) on delete cascade,
+  step text not null check (step in ('call', 'primary_schedule', 'primary', 'final_schedule', 'final', 'decision')),
+  reason text not null default '',
+  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected', 'used', 'cancelled')),
+  requested_by uuid not null references public.profiles (id) on delete cascade,
+  requested_by_name text not null default '',
+  decided_by uuid references public.profiles (id) on delete set null,
+  decided_by_name text not null default '',
+  decided_at timestamptz,
+  decision_note text not null default '',
+  used_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists edit_requests_candidate_idx on public.edit_requests (candidate_id, created_at desc);
+-- One open request per person, candidate and step.
+create unique index if not exists edit_requests_open_idx on public.edit_requests (candidate_id, step, requested_by)
+  where status in ('pending', 'approved');
+
+create or replace function public.request_edit(p_candidate uuid, p_step text, p_reason text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  cand public.candidates%rowtype;
+  actor text := public.actor_name();
+  reason_text text := left(btrim(coalesce(p_reason, '')), 1000);
+  new_id uuid;
+  recipient uuid;
+begin
+  if not public.can_write() then
+    raise exception 'Only HR and admins can ask for a correction.';
+  end if;
+  if cardinality(public.edit_step_fields(p_step)) = 0 then
+    raise exception 'There is no step called %.', p_step;
+  end if;
+  if length(reason_text) < 3 then
+    raise exception 'Say what was entered wrongly, so the approver knows what to check.';
+  end if;
+  select * into cand from public.candidates where id = p_candidate;
+  if not found then
+    raise exception 'This candidate was not found.';
+  end if;
+  if exists (select 1 from public.edit_requests where candidate_id = p_candidate and step = p_step
+             and requested_by = auth.uid() and status in ('pending', 'approved')) then
+    raise exception 'You already asked to correct this step. It is waiting for an answer, or approved and ready for you.';
+  end if;
+  insert into public.edit_requests (candidate_id, step, reason, requested_by, requested_by_name)
+  values (p_candidate, p_step, reason_text, auth.uid(), actor)
+  returning id into new_id;
+  for recipient in select id from public.profiles where role = 'admin' and id <> auth.uid() loop
+    perform public.push_notification(recipient, 'edit_request', actor, cand.bucket_id, cand.id, cand.full_name,
+      (select designation from public.cv_buckets where id = cand.bucket_id),
+      public.edit_step_label(p_step) || ': ' || left(reason_text, 200), 1, false);
+  end loop;
+  return (select to_jsonb(r) from public.edit_requests r where r.id = new_id);
+end;
+$$;
+
+create or replace function public.decide_edit(p_request uuid, p_approve boolean, p_note text default '')
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  req public.edit_requests%rowtype;
+  cand public.candidates%rowtype;
+  actor text := public.actor_name();
+  note_text text := left(btrim(coalesce(p_note, '')), 1000);
+begin
+  if not public.is_admin() then
+    raise exception 'Only an admin can answer a correction request.';
+  end if;
+  select * into req from public.edit_requests where id = p_request for update;
+  if not found then
+    raise exception 'This correction request was not found.';
+  end if;
+  if req.status <> 'pending' then
+    raise exception 'This request was already answered or withdrawn.';
+  end if;
+  update public.edit_requests set
+    status = case when p_approve then 'approved' else 'rejected' end,
+    decided_by = auth.uid(), decided_by_name = actor, decided_at = now(), decision_note = note_text
+  where id = p_request;
+  if req.requested_by is distinct from auth.uid() then
+    select * into cand from public.candidates where id = req.candidate_id;
+    perform public.push_notification(req.requested_by, case when p_approve then 'edit_approved' else 'edit_rejected' end,
+      actor, cand.bucket_id, cand.id, cand.full_name, (select designation from public.cv_buckets where id = cand.bucket_id),
+      public.edit_step_label(req.step) || case when note_text <> '' then ': ' || left(note_text, 200) else '' end, 1, false);
+  end if;
+  return (select to_jsonb(r) from public.edit_requests r where r.id = p_request);
+end;
+$$;
+
+-- The person who asked can withdraw a request that is still open.
+create or replace function public.cancel_edit(p_request uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+begin
+  update public.edit_requests set status = 'cancelled'
+  where id = p_request and requested_by = auth.uid() and status in ('pending', 'approved');
+  if not found then
+    raise exception 'Only an open request of your own can be withdrawn.';
+  end if;
+  return (select to_jsonb(r) from public.edit_requests r where r.id = p_request);
+end;
+$$;
+
+-- Applies an approved correction: only the fields of its step, once. The desk rules still apply, and the
+-- History keeps every value before and after.
+create or replace function public.apply_edit(p_request uuid, p_changes jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  req public.edit_requests%rowtype;
+  cur public.candidates%rowtype;
+  nxt public.candidates%rowtype;
+  allowed text[];
+  field_name text;
+  old_value text;
+  new_value text;
+  assignments text[] := '{}';
+  summary text[] := '{}';
+  actor text := public.actor_name();
+begin
+  if not public.can_write() then
+    raise exception 'Only HR and admins can correct a step.';
+  end if;
+  select * into req from public.edit_requests where id = p_request for update;
+  if not found or req.requested_by is distinct from auth.uid() then
+    raise exception 'This correction request was not found.';
+  end if;
+  if req.status <> 'approved' then
+    raise exception 'This correction is not approved, or it was already used.';
+  end if;
+  if jsonb_typeof(p_changes) is distinct from 'object' then
+    raise exception 'Nothing to correct.';
+  end if;
+  allowed := public.edit_step_fields(req.step);
+  select * into cur from public.candidates where id = req.candidate_id;
+  nxt := jsonb_populate_record(cur, p_changes);
+  for field_name in select jsonb_object_keys(p_changes) loop
+    if not field_name = any (allowed) then
+      raise exception 'A correction of the % step cannot change %.', lower(public.edit_step_label(req.step)), field_name;
+    end if;
+    old_value := to_jsonb(cur) ->> field_name;
+    new_value := to_jsonb(nxt) ->> field_name;
+    if old_value is distinct from new_value then
+      assignments := assignments || format('%I = ($1).%I', field_name, field_name);
+      summary := summary || format('%s: %s -> %s', field_name, coalesce(nullif(old_value, ''), '-'), coalesce(nullif(new_value, ''), '-'));
+    end if;
+  end loop;
+  if cardinality(assignments) = 0 then
+    raise exception 'Nothing was changed.';
+  end if;
+  perform set_config('app.edit_grant', req.id::text, true);
+  execute format('update public.candidates set %s where id = ($1).id', array_to_string(assignments, ', ')) using nxt;
+  perform set_config('app.edit_grant', '', true);
+  update public.edit_requests set status = 'used', used_at = now() where id = req.id;
+  insert into public.candidate_events (candidate_id, field, from_value, to_value, actor_name, actor_id)
+  values (cur.id, 'correction', req.step, array_to_string(summary, '; '), actor, auth.uid());
+  if req.decided_by is not null and req.decided_by <> auth.uid() then
+    perform public.push_notification(req.decided_by, 'edit_used', actor, cur.bucket_id, cur.id, cur.full_name,
+      (select designation from public.cv_buckets where id = cur.bucket_id), public.edit_step_label(req.step), 1, false);
+  end if;
+  return (select to_jsonb(r) from public.edit_requests r where r.id = req.id);
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Question library: written test, MCQ and interview questions, to build question papers from
 -- ---------------------------------------------------------------------------
 create table if not exists public.questions (
@@ -973,6 +1205,7 @@ alter table public.candidate_reviews enable row level security;
 alter table public.cv_review_sessions enable row level security;
 alter table public.notifications enable row level security;
 alter table public.questions enable row level security;
+alter table public.edit_requests enable row level security;
 
 drop policy if exists profiles_select on public.profiles;
 create policy profiles_select on public.profiles for select to authenticated
@@ -1019,6 +1252,15 @@ create policy job_postings_delete on public.job_postings for delete to authentic
 -- Questions hold no candidate data either: HR can remove one it no longer wants.
 drop policy if exists questions_delete on public.questions;
 create policy questions_delete on public.questions for delete to authenticated using (public.can_write());
+-- HR can delete an empty CV bucket. One that holds candidates cannot go while they are in it, and only an
+-- admin can delete candidates, so only an admin can delete a bucket with its CVs.
+drop policy if exists cv_buckets_delete on public.cv_buckets;
+create policy cv_buckets_delete on public.cv_buckets for delete to authenticated using (public.can_write());
+
+-- Correction requests: staff read them; they are written only by request_edit, decide_edit, cancel_edit and apply_edit.
+drop policy if exists edit_requests_select on public.edit_requests;
+create policy edit_requests_select on public.edit_requests for select to authenticated using (public.can_read());
+revoke insert, update, delete on public.edit_requests from anon, authenticated;
 
 drop policy if exists candidate_events_select on public.candidate_events;
 create policy candidate_events_select on public.candidate_events for select to authenticated using (public.can_read());
@@ -1169,6 +1411,17 @@ begin
 end;
 $$;
 
+-- A feedback link can be shared before or after its interview, and works until the candidate moves on:
+-- the primary link until the final interview is scheduled, the final link until the final decision.
+create or replace function public.review_is_open(p_stage text, c public.candidates)
+returns boolean language sql stable set search_path = '' as $$
+  select case p_stage
+    when 'primary' then c.message_status = 'message_done' and c.secondary_status = 'pending'
+    when 'secondary' then c.secondary_status <> 'pending' and c.final_decision is null
+    else false
+  end
+$$;
+
 create or replace function public.get_review_invite(p_token uuid)
 returns jsonb language sql stable security definer set search_path = '' as $$
   select jsonb_build_object(
@@ -1176,7 +1429,8 @@ returns jsonb language sql stable security definer set search_path = '' as $$
     'designation', b.designation,
     'group_name', s.group_name,
     'stage', r.stage,
-    'submitted', r.submitted_at is not null
+    'submitted', r.submitted_at is not null,
+    'open', public.review_is_open(r.stage, c)
   )
   from public.candidate_reviews r
   join public.candidates c on c.id = r.candidate_id
@@ -1193,6 +1447,13 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 begin
   if p_overall is null or p_overall not between 1 and 5 then
     raise exception 'Overall rating is required.';
+  end if;
+
+  if exists (
+    select 1 from public.candidate_reviews r join public.candidates c on c.id = r.candidate_id
+    where r.token = p_token and r.submitted_at is null and not public.review_is_open(r.stage, c)
+  ) then
+    raise exception 'This feedback link has closed: the interview process has moved on.';
   end if;
 
   update public.candidate_reviews set
@@ -1244,6 +1505,10 @@ revoke all on function public.submit_review(uuid, int, int, int, int, boolean, t
 revoke all on function public.set_ai_key(text) from public;
 revoke all on function public.ai_key_status() from public;
 revoke all on function public.handle_new_user() from public;
+revoke all on function public.request_edit(uuid, text, text) from public;
+revoke all on function public.decide_edit(uuid, boolean, text) from public;
+revoke all on function public.cancel_edit(uuid) from public;
+revoke all on function public.apply_edit(uuid, jsonb) from public;
 -- Internal: only the triggers call these.
 revoke all on function public.push_notification(uuid, text, text, uuid, uuid, text, text, text, int, boolean) from public, anon, authenticated;
 revoke all on function public.team_members(text, uuid[]) from public, anon, authenticated;
@@ -1255,6 +1520,10 @@ grant execute on function public.get_review_invite(uuid) to anon, authenticated;
 grant execute on function public.submit_review(uuid, int, int, int, int, boolean, text) to anon, authenticated;
 grant execute on function public.set_ai_key(text) to authenticated;
 grant execute on function public.ai_key_status() to authenticated;
+grant execute on function public.request_edit(uuid, text, text) to authenticated;
+grant execute on function public.decide_edit(uuid, boolean, text) to authenticated;
+grant execute on function public.cancel_edit(uuid) to authenticated;
+grant execute on function public.apply_edit(uuid, jsonb) to authenticated;
 
 grant usage on sequence public.requisition_seq to authenticated;
 
@@ -1305,7 +1574,7 @@ declare
   t text;
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    foreach t in array array['candidates', 'cv_buckets', 'requisitions', 'job_postings', 'designations', 'candidate_reviews', 'notifications', 'profiles', 'questions'] loop
+    foreach t in array array['candidates', 'cv_buckets', 'requisitions', 'job_postings', 'designations', 'candidate_reviews', 'notifications', 'profiles', 'questions', 'edit_requests'] loop
       if not exists (
         select 1 from pg_publication_tables
         where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t

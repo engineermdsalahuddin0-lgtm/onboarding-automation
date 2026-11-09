@@ -20,7 +20,7 @@ export const TOURS: Record<TourId, { title: string; steps: TourStep[] }> = {
       { target: 'search', title: 'Find anyone', body: 'Type a name, mobile number or email. Click a result to open that candidate\'s card.' },
       { target: 'upload', title: 'Upload CVs', body: 'Add PDF or Word CVs, scans, or a ZIP of them. The details and photo are read automatically. Only the CV screening desk sees this button.' },
       { target: 'bell', title: 'Updates', body: 'New CVs, postings, handovers and the big decisions arrive here. A number means unread updates. Click one to go straight to it.' },
-      { target: 'dash-tiles', title: 'Numbers at a glance', body: 'Point at a tile to see the details behind it, by department and by person. Click a tile to open the page it is about.' },
+      { target: 'dash-tiles', title: 'Numbers at a glance', body: 'Point at a tile for a quick look. Click it for the full details, with charts and tables, without leaving the dashboard. Interviews, next 7 days opens a calendar.' },
       { target: 'dash-team', title: 'Process team progress', body: 'For the head of the team: how many candidates each person has at each step. Point at a number to see the names.' },
       { target: 'dash-now', title: 'Who is working now', body: 'Who has the app open and which candidate they are working on, live. Team activity has the full record.' },
       { target: 'dash-todo', title: 'To do', body: 'Your next steps, most urgent first: CVs to screen, calls to make, interviews to record. Click a line to open it.' },

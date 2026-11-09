@@ -1,17 +1,22 @@
-import { ClipboardList, ExternalLink, FolderOpen, Megaphone, Pencil, Plus, Trash2, UserRoundSearch } from 'lucide-react';
+import { ClipboardList, Download, ExternalLink, Eye, FileSpreadsheet, FolderOpen, Megaphone, Pencil, Plus, Search, Trash2, UserRoundSearch } from 'lucide-react';
 import { useMemo, useState, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { BucketFormDialog } from '../components/BucketForm';
 import { HelpTip } from '../components/Guide';
+import { OrgFields } from '../components/OrgFields';
 import { Button, Confirm, Dialog, EmptyState, errorText, IconButton, PageHeader, Select, StatusBadge, TABLE, Tabs, TD, TextArea, TextInput, TH, THEAD, useToast } from '../components/ui';
-import { dateMedium, money, todayIso } from '../lib/format';
+import { VacancyImportDialog } from '../components/VacancyImport';
+import { downloadXlsx, type ExportColumn } from '../lib/export';
+import { dateDmy, dateMedium, money, todayIso } from '../lib/format';
+import { placeText } from '../lib/org';
+import { byNewest, daysToFill, isOpenRequisition, selectedNames } from '../lib/requisitions';
 import type { Tone } from '../lib/pipeline';
 import { useStore } from '../lib/store';
 import type { Designation, JobPosting, Priority, Requisition, RequisitionStatus } from '../types';
 
 type Tab = 'vacancies' | 'requisitions' | 'postings';
 
-const STATUS_TONE: Record<RequisitionStatus, Tone> = {
+export const STATUS_TONE: Record<RequisitionStatus, Tone> = {
   'Pending approval': 'warning',
   Approved: 'info',
   'In progress': 'progress',
@@ -77,8 +82,19 @@ function RequisitionDialog({ requisition, fromDesignation, onClose }: { requisit
   const [form, setForm] = useState({
     designation_id: requisition?.designation_id ?? fromDesignation?.id ?? null,
     designation: requisition?.designation ?? fromDesignation?.title ?? '',
+    unit: requisition?.unit ?? '',
     department: requisition?.department ?? fromDesignation?.department ?? settings.departments[0] ?? '',
+    section: requisition?.section ?? '',
+    subsection: requisition?.subsection ?? '',
     company: requisition?.company ?? fromDesignation?.company ?? settings.default_company,
+    vacancy_type: requisition?.vacancy_type ?? '',
+    replacing: requisition?.replacing ?? '',
+    requisition_date: requisition?.requisition_date ?? (requisition ? '' : todayIso()),
+    approved_on: requisition?.approved_on ?? '',
+    offer_date: requisition?.offer_date ?? '',
+    expected_joining: requisition?.expected_joining ?? '',
+    selected_names: requisition?.selected_names ?? '',
+    remarks: requisition?.remarks ?? '',
     vacancies: String(requisition?.vacancies ?? vacant),
     priority: requisition?.priority ?? ('Medium' as Priority),
     employment_type: requisition?.employment_type ?? 'Permanent',
@@ -107,6 +123,10 @@ function RequisitionDialog({ requisition, fromDesignation, onClose }: { requisit
         budget_min: form.budget_min ? Number(form.budget_min) : null,
         budget_max: form.budget_max ? Number(form.budget_max) : null,
         target_date: form.target_date || null,
+        requisition_date: form.requisition_date || null,
+        approved_on: form.approved_on || null,
+        offer_date: form.offer_date || null,
+        expected_joining: form.expected_joining || null,
         filled_at: form.status === 'Filled' ? requisition?.filled_at ?? new Date().toISOString() : null,
       });
       toast('Requisition saved.');
@@ -127,11 +147,14 @@ function RequisitionDialog({ requisition, fromDesignation, onClose }: { requisit
       <form id="requisition-form" onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
         <TextInput label="Designation" required autoFocus list="designation-list" value={form.designation} onChange={(e) => set({ designation: e.target.value })} />
         <datalist id="designation-list">{designations.map((d) => <option key={d.id} value={d.title} />)}</datalist>
-        <Select label="Department" value={form.department} onChange={(e) => set({ department: e.target.value })}>
-          {[...new Set([...settings.departments, form.department].filter(Boolean))].map((d) => <option key={d}>{d}</option>)}
-        </Select>
         <TextInput label="Company" list="req-company-options-2" value={form.company} onChange={(e) => set({ company: e.target.value })} />
         <datalist id="req-company-options-2">{settings.companies.map((c) => <option key={c} value={c} />)}</datalist>
+        <OrgFields value={form} onChange={(place) => set(place)} />
+        <Select label="New or replacement" value={form.vacancy_type} onChange={(e) => set({ vacancy_type: e.target.value })}>
+          <option value="">Not stated</option>
+          {[...new Set(['New', 'Replacement', 'New & Replacement', form.vacancy_type].filter(Boolean))].map((t) => <option key={t}>{t}</option>)}
+        </Select>
+        <TextInput label="Replacing (name and ID)" disabled={form.vacancy_type === 'New'} value={form.replacing} onChange={(e) => set({ replacing: e.target.value })} />
         <TextInput label="Vacancies" type="number" min={1} required value={form.vacancies} onChange={(e) => set({ vacancies: e.target.value })} />
         <Select label="Priority" value={form.priority} onChange={(e) => set({ priority: e.target.value as Priority })}>
           {['Urgent', 'High', 'Medium', 'Low'].map((p) => <option key={p}>{p}</option>)}
@@ -147,8 +170,14 @@ function RequisitionDialog({ requisition, fromDesignation, onClose }: { requisit
         <TextInput label="Budget from (BDT per month)" type="number" min={0} value={form.budget_min} onChange={(e) => set({ budget_min: e.target.value })} />
         <TextInput label="Budget to (BDT per month)" type="number" min={0} value={form.budget_max} onChange={(e) => set({ budget_max: e.target.value })} />
         <TextInput label="Target date" type="date" value={form.target_date} onChange={(e) => set({ target_date: e.target.value })} />
+        <TextInput label="Requisition date" type="date" value={form.requisition_date} onChange={(e) => set({ requisition_date: e.target.value })} />
+        <TextInput label="Approved requisition received" type="date" min={form.requisition_date || undefined} value={form.approved_on} onChange={(e) => set({ approved_on: e.target.value })} />
+        <TextInput label="Approval and offer letter" type="date" value={form.offer_date} onChange={(e) => set({ offer_date: e.target.value })} hint="Days to fill are counted up to this day." />
+        <TextInput label="Expected joining" type="date" value={form.expected_joining} onChange={(e) => set({ expected_joining: e.target.value })} />
         <div className="sm:col-span-2"><TextArea label="Why this position is needed" rows={2} value={form.justification} onChange={(e) => set({ justification: e.target.value })} /></div>
         <div className="sm:col-span-2"><TextArea label="Job description" hint="Shown to candidates on the application form." rows={4} value={form.job_description} onChange={(e) => set({ job_description: e.target.value })} /></div>
+        <TextArea label="Selected candidates" hint="For hiring done outside the app, e.g. by the factory. One name per line." rows={3} value={form.selected_names} onChange={(e) => set({ selected_names: e.target.value })} />
+        <TextArea label="Remarks" rows={3} value={form.remarks} onChange={(e) => set({ remarks: e.target.value })} />
       </form>
     </Dialog>
   );
@@ -215,13 +244,137 @@ function PostingDialog({ posting, requisitionId, onClose }: { posting?: JobPosti
   );
 }
 
+/** Days from the approved requisition (or the requisition) to the offer letter, or to today while still open. */
+const sheetFigure = (r: Requisition, key: string) => {
+  const value = r.sheet_data?.[key];
+  return value === null || value === undefined || value === '' ? '' : value === true ? 'Yes' : String(value);
+};
+
+/** The requisitions in the column order of the company's vacancy status sheet, so the download reads like it. */
+const SHEET_COLUMNS: ExportColumn<Requisition & { sl: number }>[] = [
+  { header: 'SL', value: (r) => r.sl, width: 6 },
+  { header: 'Ref.', value: (r) => r.ref_no, width: 14 },
+  { header: 'Unit', value: (r) => r.unit, width: 8 },
+  { header: 'Position', value: (r) => r.designation, width: 26 },
+  { header: 'Department', value: (r) => r.department, width: 24 },
+  { header: 'Section', value: (r) => r.section, width: 20 },
+  { header: 'Subsection', value: (r) => r.subsection, width: 20 },
+  { header: 'Reason for Vacancy New / Replacement', value: (r) => r.vacancy_type, width: 16 },
+  { header: 'Former Employee Name', value: (r) => r.replacing, width: 24 },
+  { header: 'Vacancy / GAP', value: (r) => sheetFigure(r, 'gap') },
+  { header: 'Required', value: (r) => r.vacancies },
+  { header: 'Requisition Date', value: (r) => dateDmy(r.requisition_date), width: 14 },
+  { header: 'Approved Requisition received Date', value: (r) => dateDmy(r.approved_on), width: 16 },
+  { header: 'Job posting Site', value: (r) => sheetFigure(r, 'posting_site'), width: 18 },
+  { header: 'Job Posting Date', value: (r) => sheetFigure(r, 'posting_date'), width: 14 },
+  { header: 'CV Received', value: (r) => sheetFigure(r, 'cv_received') },
+  { header: 'Shortlisted for Primary Interview', value: (r) => sheetFigure(r, 'shortlisted_primary') },
+  { header: 'Primary Interview Date', value: (r) => sheetFigure(r, 'primary_interview'), width: 16 },
+  { header: 'Primary Interview Attended', value: (r) => sheetFigure(r, 'primary_attended') },
+  { header: 'Shortlisted for Final Interview', value: (r) => sheetFigure(r, 'shortlisted_final') },
+  { header: 'Final Interview Date', value: (r) => sheetFigure(r, 'final_interview'), width: 16 },
+  { header: 'Approval & Offer Letter (Date)', value: (r) => dateDmy(r.offer_date), width: 16 },
+  { header: 'No. of Days to Fill', value: (r) => daysToFill(r)?.days ?? '' },
+  { header: 'Name of Selected Candidates', value: (r) => r.selected_names, width: 30 },
+  { header: 'Current Status', value: (r) => r.status, width: 14 },
+  { header: 'Expected Date of Joining', value: (r) => dateDmy(r.expected_joining) || sheetFigure(r, 'expected_joining_note'), width: 16 },
+  { header: 'Remarks', value: (r) => r.remarks, width: 30 },
+];
+
+/** Everything about one requisition, including the vacancy sheet's own figures. */
+export function RequisitionDetails({ requisition: r, onClose }: { requisition: Requisition; onClose: () => void }) {
+  const fill = daysToFill(r);
+  const facts: [string, string | number][] = [
+    ['Where', placeText(r) || '-'],
+    ['Company', r.company],
+    ['New or replacement', r.vacancy_type],
+    ['Replacing', r.replacing],
+    ['Vacancies', r.vacancies],
+    ['Priority', r.priority],
+    ['Status', r.status],
+    ['Requisition date', dateMedium(r.requisition_date)],
+    ['Approved requisition received', dateMedium(r.approved_on)],
+    ['Approval and offer letter', dateMedium(r.offer_date)],
+    ['Days to fill', fill ? `${fill.days}${fill.open ? ' so far' : ''}` : ''],
+    ['Expected joining', dateMedium(r.expected_joining) || sheetFigure(r, 'expected_joining_note')],
+    ['Budget (BDT per month)', r.budget_min || r.budget_max ? `${money(r.budget_min)} - ${money(r.budget_max)}` : ''],
+    ['Target date', dateMedium(r.target_date)],
+    ['Hiring manager', r.hiring_manager],
+    ['Requested by', r.requested_by],
+  ];
+  const sheet: [string, string][] = [
+    ['Vacancy / gap', sheetFigure(r, 'gap')],
+    ['Handled by the factory (FO)', sheetFigure(r, 'factory') === 'Yes' ? 'Yes' : ''],
+    ['Job posting site', sheetFigure(r, 'posting_site')],
+    ['Job posting date', sheetFigure(r, 'posting_date')],
+    ['CVs received', sheetFigure(r, 'cv_received')],
+    ['Shortlisted for primary interview', sheetFigure(r, 'shortlisted_primary')],
+    ['Primary interview', sheetFigure(r, 'primary_interview')],
+    ['Attended the primary interview', sheetFigure(r, 'primary_attended')],
+    ['Shortlisted for final interview', sheetFigure(r, 'shortlisted_final')],
+    ['Final interview', sheetFigure(r, 'final_interview')],
+    ['Offer letter dates', sheetFigure(r, 'offer_dates')],
+    ['Status in the sheet', sheetFigure(r, 'sheet_status')],
+  ];
+  const list = (items: [string, string | number][]) => (
+    <dl className="grid gap-x-6 gap-y-2.5 sm:grid-cols-2">
+      {items.filter(([, value]) => value !== '' && value !== null).map(([label, value]) => (
+        <div key={label}><dt className="text-xs text-ink-muted">{label}</dt><dd className="text-sm break-words">{value}</dd></div>
+      ))}
+    </dl>
+  );
+  return (
+    <Dialog title={`${r.ref_no} · ${r.designation}`} description={r.sheet_key ? 'Synced from the vacancy status sheet.' : undefined} onClose={onClose} width="max-w-2xl">
+      <div className="space-y-4">
+        {list(facts)}
+        {r.selected_names && (
+          <div><p className="text-xs text-ink-muted">Selected candidates</p><p className="text-sm whitespace-pre-wrap">{r.selected_names}</p></div>
+        )}
+        {r.remarks && <div><p className="text-xs text-ink-muted">Remarks</p><p className="text-sm whitespace-pre-wrap">{r.remarks}</p></div>}
+        {r.sheet_key && sheet.some(([, value]) => value) && (
+          <section className="border-t border-line pt-3">
+            <h3 className="mb-2 text-xs font-semibold tracking-wide text-ink-muted uppercase">From the vacancy sheet</h3>
+            {list(sheet)}
+          </section>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
 export function RequisitionsPage() {
-  const { designations, requisitions, postings, buckets, candidates, canWrite, isAdmin, removeRequisition, removePosting, removeDesignation } = useStore();
+  const { designations, requisitions, postings, buckets, candidates, settings, canWrite, isAdmin, removeRequisition, removePosting, removeDesignation } = useStore();
   const toast = useToast();
   const navigate = useNavigate();
-  const [tab, setTab] = useState<Tab>('vacancies');
+  // The dashboard links here with ?tab=requisitions&status=open, so both show the same list.
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState<Tab>(() => (['vacancies', 'requisitions', 'postings'].includes(searchParams.get('tab') ?? '') ? (searchParams.get('tab') as Tab) : 'vacancies'));
   const [modal, setModal] = useState<React.ReactNode>(null);
   const close = () => setModal(null);
+  const [filter, setFilter] = useState({ text: '', unit: searchParams.get('unit') ?? '', status: searchParams.get('status') ?? '', type: '', year: '' });
+  const setFilterValue = (patch: Partial<typeof filter>) => setFilter((current) => ({ ...current, ...patch }));
+  const requisitionYear = (r: Requisition) => (r.requisition_date ?? r.created_at).slice(0, 4);
+
+  const units = useMemo(() => [...new Set([...(settings.org_structure ?? []).map((u) => u.code), ...requisitions.map((r) => r.unit)].filter(Boolean))], [requisitions, settings.org_structure]);
+  const years = useMemo(() => [...new Set(requisitions.map(requisitionYear))].sort().reverse(), [requisitions]);
+  const shownRequisitions = useMemo(() => {
+    const text = filter.text.trim().toLowerCase();
+    return requisitions
+      .filter((r) =>
+        (!filter.unit || r.unit === filter.unit) &&
+        (!filter.status || (filter.status === 'open' ? isOpenRequisition(r) : r.status === filter.status)) &&
+        (!filter.type || r.vacancy_type === filter.type) &&
+        (!filter.year || requisitionYear(r) === filter.year) &&
+        (!text || [r.ref_no, r.designation, r.department, r.section, r.subsection, r.replacing, r.selected_names, r.remarks].some((value) => (value ?? '').toLowerCase().includes(text))))
+      .sort(byNewest);
+  }, [requisitions, filter]);
+
+  function downloadSheet() {
+    const rows = [...shownRequisitions]
+      .sort((a, b) => (Number(a.sheet_data?.sl ?? Infinity) - Number(b.sheet_data?.sl ?? Infinity)) || (a.requisition_date ?? a.created_at).localeCompare(b.requisition_date ?? b.created_at))
+      .map((r, index) => ({ ...r, sl: index + 1 }));
+    void downloadXlsx(rows, SHEET_COLUMNS, `Job vacancy status ${todayIso()}.xlsx`, 'VACANCY');
+  }
 
   const vacant = useMemo(
     () => designations.map((d) => ({ ...d, vacant: Math.max(0, d.sanctioned - d.filled) })).sort((a, b) => b.vacant - a.vacant),
@@ -270,6 +423,7 @@ export function RequisitionsPage() {
           canWrite && (
             <span data-tour="req-new" className="flex gap-2">
               {tab === 'vacancies' && <Button variant="primary" icon={Plus} onClick={() => setModal(<DesignationDialog onClose={close} />)}>Add designation</Button>}
+              {tab === 'requisitions' && <Button icon={FileSpreadsheet} onClick={() => setModal(<VacancyImportDialog onClose={close} />)}>Sync vacancy sheet</Button>}
               {tab === 'requisitions' && <Button variant="primary" icon={Plus} onClick={() => setModal(<RequisitionDialog onClose={close} />)}>New requisition</Button>}
               {tab === 'postings' && <Button variant="primary" icon={Plus} disabled={requisitions.length === 0} onClick={() => setModal(<PostingDialog onClose={close} />)}>Record job posting</Button>}
             </span>
@@ -310,7 +464,7 @@ export function RequisitionsPage() {
               </thead>
               <tbody>
                 {vacant.map((d) => {
-                  const open = requisitions.find((r) => r.designation === d.title && r.department === d.department && !['Filled', 'Cancelled'].includes(r.status));
+                  const open = requisitions.find((r) => r.designation === d.title && r.department === d.department && isOpenRequisition(r));
                   return (
                     <tr key={d.id}>
                       <td className={`${TD} font-medium`}>{d.title}</td>
@@ -342,57 +496,119 @@ export function RequisitionsPage() {
 
         {tab === 'requisitions' && (
           requisitions.length === 0 ? (
-            <EmptyState icon={ClipboardList} title="No requisitions yet">Raise one from a vacant designation, or create it here.</EmptyState>
+            <EmptyState
+              icon={ClipboardList}
+              title="No requisitions yet"
+              action={canWrite ? <Button icon={FileSpreadsheet} onClick={() => setModal(<VacancyImportDialog onClose={close} />)}>Sync the vacancy status sheet</Button> : undefined}
+            >
+              Raise one from a vacant designation, create it here, or bring in the company's vacancy status sheet.
+            </EmptyState>
           ) : (
-            <table className={TABLE}>
-              <thead className={THEAD}>
-                <tr>
-                  <th scope="col" className={TH}>Ref.</th>
-                  <th scope="col" className={TH}>Position</th>
-                  <th scope="col" className={`${TH} text-right`}>Vacancies</th>
-                  <th scope="col" className={TH}>Priority</th>
-                  <th scope="col" className={TH}>Status</th>
-                  <th scope="col" className={TH}>Budget (BDT)</th>
-                  <th scope="col" className={TH}>Target</th>
-                  <th scope="col" className={`${TH} text-right`}>Posts</th>
-                  <th scope="col" className={`${TH} text-right`}>CVs</th>
-                  {canWrite && <th scope="col" className={TH}><span className="sr-only">Actions</span></th>}
-                </tr>
-              </thead>
-              <tbody>
-                {requisitions.map((r) => {
-                  const bucket = buckets.find((b) => b.requisition_id === r.id);
-                  return (
-                    <tr key={r.id}>
-                      <td className={`${TD} tabular whitespace-nowrap`}>{r.ref_no}</td>
-                      <td className={TD}>
-                        <span className="font-medium">{r.designation}</span>
-                        <span className="block text-xs text-ink-muted">{r.department}{r.hiring_manager ? ` · ${r.hiring_manager}` : ''}</span>
-                      </td>
-                      <td className={`${TD} tabular text-right`}>{r.vacancies}</td>
-                      <td className={TD}><StatusBadge tone={PRIORITY_TONE[r.priority]}>{r.priority}</StatusBadge></td>
-                      <td className={TD}><StatusBadge tone={STATUS_TONE[r.status]}>{r.status}</StatusBadge></td>
-                      <td className={`${TD} tabular whitespace-nowrap`}>{r.budget_min || r.budget_max ? `${money(r.budget_min)} - ${money(r.budget_max)}` : '-'}</td>
-                      <td className={`${TD} tabular whitespace-nowrap`}>{dateMedium(r.target_date) || '-'}</td>
-                      <td className={`${TD} tabular text-right`}>{postings.filter((p) => p.requisition_id === r.id).length}</td>
-                      <td className={`${TD} tabular text-right`}>{cvCount(r.id)}</td>
-                      {canWrite && (
+            <>
+              <div className="flex flex-wrap items-end gap-2 border-b border-line p-3">
+                <div className="relative w-60">
+                  <Search className="pointer-events-none absolute top-2.5 left-3 size-4 text-ink-muted" aria-hidden />
+                  <input type="search" aria-label="Search requisitions" placeholder="Position, section, name…" value={filter.text} onChange={(e) => setFilterValue({ text: e.target.value })} className="h-9 w-full rounded-lg border border-line-strong bg-surface pr-3 pl-9 text-sm" />
+                </div>
+                {units.length > 0 && (
+                  <div className="w-28">
+                    <Select aria-label="Filter by unit" value={filter.unit} onChange={(e) => setFilterValue({ unit: e.target.value })}>
+                      <option value="">All units</option>
+                      {units.map((code) => <option key={code}>{code}</option>)}
+                    </Select>
+                  </div>
+                )}
+                <div className="w-40">
+                  <Select aria-label="Filter by status" value={filter.status} onChange={(e) => setFilterValue({ status: e.target.value })}>
+                    <option value="">All statuses</option>
+                    <option value="open">Still open</option>
+                    {Object.keys(STATUS_TONE).map((s) => <option key={s}>{s}</option>)}
+                  </Select>
+                </div>
+                <div className="w-40">
+                  <Select aria-label="Filter by new or replacement" value={filter.type} onChange={(e) => setFilterValue({ type: e.target.value })}>
+                    <option value="">New and replacement</option>
+                    {[...new Set(requisitions.map((r) => r.vacancy_type).filter(Boolean))].map((t) => <option key={t}>{t}</option>)}
+                  </Select>
+                </div>
+                {years.length > 1 && (
+                  <div className="w-28">
+                    <Select aria-label="Filter by year" value={filter.year} onChange={(e) => setFilterValue({ year: e.target.value })}>
+                      <option value="">All years</option>
+                      {years.map((y) => <option key={y}>{y}</option>)}
+                    </Select>
+                  </div>
+                )}
+                <p className="ml-auto self-center text-xs text-ink-muted">{shownRequisitions.length} of {requisitions.length}</p>
+                <Button size="sm" icon={Download} disabled={shownRequisitions.length === 0} onClick={downloadSheet}>Download as the vacancy sheet</Button>
+              </div>
+              <table className={TABLE}>
+                <thead className={THEAD}>
+                  <tr>
+                    <th scope="col" className={TH}>Ref.</th>
+                    <th scope="col" className={TH}>Position</th>
+                    <th scope="col" className={TH}>Type</th>
+                    <th scope="col" className={`${TH} text-right`}>Vacancies</th>
+                    <th scope="col" className={TH}>Status</th>
+                    <th scope="col" className={TH}>Requisition</th>
+                    <th scope="col" className={`${TH} text-right`} title="From the approved requisition to the offer letter; still counting while open">Days to fill</th>
+                    <th scope="col" className={TH}>Selected</th>
+                    <th scope="col" className={`${TH} text-right`}>CVs</th>
+                    <th scope="col" className={TH}><span className="sr-only">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shownRequisitions.map((r) => {
+                    const bucket = buckets.find((b) => b.requisition_id === r.id);
+                    const fill = daysToFill(r);
+                    const posts = postings.filter((p) => p.requisition_id === r.id).length;
+                    const selected = selectedNames(r);
+                    return (
+                      <tr key={r.id}>
+                        <td className={`${TD} tabular whitespace-nowrap`}>{r.ref_no}</td>
+                        <td className={TD}>
+                          <span className="font-medium">{r.designation}</span>
+                          <span className="block text-xs text-ink-muted">{placeText(r) || r.department}{r.hiring_manager ? ` · ${r.hiring_manager}` : ''}</span>
+                          {r.replacing && <span className="block text-xs text-ink-muted">Replacing {r.replacing}</span>}
+                        </td>
+                        <td className={`${TD} text-xs whitespace-nowrap`}>{r.vacancy_type || '-'}</td>
+                        <td className={`${TD} tabular text-right`}>{r.vacancies}</td>
+                        <td className={TD}>
+                          <span className="flex flex-wrap gap-1">
+                            <StatusBadge tone={STATUS_TONE[r.status]}>{r.status}</StatusBadge>
+                            {(r.priority === 'Urgent' || r.priority === 'High') && <StatusBadge tone={PRIORITY_TONE[r.priority]}>{r.priority}</StatusBadge>}
+                          </span>
+                        </td>
+                        <td className={`${TD} tabular text-xs whitespace-nowrap`}>{dateMedium(r.requisition_date) || dateMedium(r.created_at)}</td>
+                        <td className={`${TD} tabular text-right`}>{fill ? <span className={fill.open && fill.days > 30 ? 'font-semibold text-amber-800' : undefined}>{fill.days}{fill.open ? '+' : ''}</span> : '-'}</td>
+                        <td className={`${TD} max-w-48 text-xs`}>
+                          {selected.length === 0 ? '-' : <span className="line-clamp-2" title={selected.join(', ')}>{selected.join(', ')}</span>}
+                        </td>
+                        <td className={`${TD} tabular text-right`}>{cvCount(r.id)}{posts > 0 && <span className="block text-[11px] text-ink-muted">{posts} post{posts === 1 ? '' : 's'}</span>}</td>
                         <td className={TD}>
                           <div className="flex items-center justify-end gap-1">
-                            {bucket
-                              ? <Button size="sm" icon={FolderOpen} onClick={() => navigate(`/buckets/${bucket.id}`)}>Bucket</Button>
-                              : <Button size="sm" icon={FolderOpen} onClick={() => setModal(<BucketFormDialog fromRequisition={r} onClose={close} />)}>Create bucket</Button>}
-                            <IconButton label={`Record job posting for ${r.ref_no}`} icon={Megaphone} onClick={() => setModal(<PostingDialog requisitionId={r.id} onClose={close} />)} />
-                            <IconButton label={`Edit ${r.ref_no}`} icon={Pencil} onClick={() => setModal(<RequisitionDialog requisition={r} onClose={close} />)} />
-                            {isAdmin && <IconButton label={`Delete ${r.ref_no}`} icon={Trash2} onClick={() => confirmDelete(`Delete ${r.ref_no}?`, 'Its job postings are deleted too. CV buckets and candidates are kept.', () => removeRequisition(r.id))} />}
+                            <IconButton label={`Details of ${r.ref_no}`} icon={Eye} onClick={() => setModal(<RequisitionDetails requisition={r} onClose={close} />)} />
+                            {canWrite && (
+                              <>
+                                {bucket
+                                  ? <Button size="sm" icon={FolderOpen} onClick={() => navigate(`/buckets/${bucket.id}`)}>Bucket</Button>
+                                  : <Button size="sm" icon={FolderOpen} onClick={() => setModal(<BucketFormDialog fromRequisition={r} onClose={close} />)}>Create bucket</Button>}
+                                <IconButton label={`Record job posting for ${r.ref_no}`} icon={Megaphone} onClick={() => setModal(<PostingDialog requisitionId={r.id} onClose={close} />)} />
+                                <IconButton label={`Edit ${r.ref_no}`} icon={Pencil} onClick={() => setModal(<RequisitionDialog requisition={r} onClose={close} />)} />
+                                {isAdmin && <IconButton label={`Delete ${r.ref_no}`} icon={Trash2} onClick={() => confirmDelete(`Delete ${r.ref_no}?`, 'Its job postings are deleted too. CV buckets and candidates are kept.', () => removeRequisition(r.id))} />}
+                              </>
+                            )}
                           </div>
                         </td>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      </tr>
+                    );
+                  })}
+                  {shownRequisitions.length === 0 && (
+                    <tr><td colSpan={10} className={`${TD} py-8 text-center text-ink-muted`}>No requisition matches these filters.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </>
           )
         )}
 

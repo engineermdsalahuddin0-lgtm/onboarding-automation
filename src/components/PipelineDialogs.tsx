@@ -1,5 +1,5 @@
 import { Copy, Download, Mail, MessageCircle, Plus, Smartphone, Star, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { backend } from '../lib/backend';
 import { DOCUMENT_CHECKLIST } from '../lib/defaults';
 import { downloadCsv } from '../lib/export';
@@ -12,6 +12,7 @@ import {
   recordJoiningCall,
   rejectDecision,
   rejectScreening,
+  REVIEW_CLOSES,
   scheduleFinal,
   schedulePrimary,
   setCall,
@@ -159,52 +160,122 @@ export function CallDialog({ candidate, status, onClose }: { candidate: Candidat
   );
 }
 
-interface PanelRow {
+export interface PanelRow {
   key: number;
   name: string;
   score: string;
   referred: boolean;
 }
 
+/** A saved panel as editable rows, with one empty row when there is none yet. */
+export function panelRows(panel: InterviewerScore[]): PanelRow[] {
+  return panel.length > 0
+    ? panel.map((entry, index) => ({ key: index, name: entry.name, score: entry.score?.toString() ?? '', referred: entry.referred }))
+    : [{ key: 0, name: '', score: '', referred: false }];
+}
+
+export const rowsToPanel = (rows: PanelRow[]): InterviewerScore[] =>
+  rows.map((row) => ({ name: row.name.trim(), score: Number(row.score), referred: row.referred }));
+
+export function panelSummary(rows: PanelRow[]): { average: number | null; recommended: number } {
+  const scores = rows.map((row) => Number(row.score)).filter((score) => score > 0);
+  return {
+    average: scores.length ? Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10 : null,
+    recommended: rows.filter((row) => row.referred).length,
+  };
+}
+
+/** One row per interviewer: name, score and whether they recommend the candidate. */
+export function PanelEditor({ rows, onChange }: { rows: PanelRow[]; onChange: (rows: PanelRow[]) => void }) {
+  const { candidates } = useStore();
+  const knownNames = useMemo(
+    () => [...new Set(candidates.flatMap((c) => [...c.primary_panel, ...c.secondary_panel].map((entry) => entry.name)).filter(Boolean))].sort(),
+    [candidates],
+  );
+  const patchRow = (key: number, patch: Partial<PanelRow>) => onChange(rows.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  const nextKey = () => Math.max(-1, ...rows.map((row) => row.key)) + 1;
+
+  return (
+    <>
+      <datalist id="interviewer-names">{knownNames.map((name) => <option key={name} value={name} />)}</datalist>
+      <ul className="space-y-2">
+        {rows.map((row, index) => (
+          <li key={row.key} className="grid grid-cols-[1fr_5.5rem_auto_2rem] items-end gap-2">
+            <TextInput
+              label={`Interviewer ${index + 1}`}
+              required
+              list="interviewer-names"
+              autoFocus={index === rows.length - 1}
+              value={row.name}
+              onChange={(e) => patchRow(row.key, { name: e.target.value })}
+            />
+            <TextInput
+              label="Score (1-10)"
+              aria-label={`Score from interviewer ${index + 1}`}
+              type="number"
+              required
+              min={1}
+              max={10}
+              inputMode="numeric"
+              value={row.score}
+              onChange={(e) => patchRow(row.key, { score: e.target.value })}
+            />
+            <label className={classNames('flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-sm transition-colors has-focus-visible:outline-2 has-focus-visible:outline-brand-600', row.referred ? 'border-amber-300 bg-amber-50 font-medium text-amber-950' : 'border-line-strong text-ink-soft hover:bg-hover')}>
+              <input
+                type="checkbox"
+                className="sr-only"
+                aria-label={`Recommended by interviewer ${index + 1}`}
+                checked={row.referred}
+                onChange={(e) => patchRow(row.key, { referred: e.target.checked })}
+              />
+              <Star className={classNames('size-4', row.referred ? 'fill-amber-500 text-amber-500' : 'text-ink-muted')} aria-hidden />
+              Recommended
+            </label>
+            <IconButton
+              label={`Remove interviewer ${index + 1}`}
+              icon={Trash2}
+              disabled={rows.length === 1}
+              className="mb-0.5"
+              onClick={() => onChange(rows.filter((item) => item.key !== row.key))}
+            />
+          </li>
+        ))}
+      </ul>
+      <Button size="sm" icon={Plus} onClick={() => onChange([...rows, { key: nextKey(), name: '', score: '', referred: false }])}>
+        Add more
+      </Button>
+    </>
+  );
+}
+
 export function InterviewResultDialog({ candidate, stage, result, onClose }: { candidate: Candidate; stage: 'primary' | 'secondary'; result: 'selected' | 'rejected'; onClose: () => void }) {
-  const { updateCandidate, candidates, user } = useStore();
+  const { updateCandidate, user } = useStore();
   const toast = useToast();
   const isPrimary = stage === 'primary';
   const asksForList = !isPrimary && result === 'selected';
   // Rejecting at the final interview is the final decision, so its dates are taken here too.
   const locks = !isPrimary && result === 'rejected';
-  const saved = isPrimary ? candidate.primary_panel : candidate.secondary_panel;
-  const nextKey = useRef(saved.length + 1);
-  const [rows, setRows] = useState<PanelRow[]>(() =>
-    saved.length > 0
-      ? saved.map((entry, index) => ({ key: index, name: entry.name, score: entry.score?.toString() ?? '', referred: entry.referred }))
-      : [{ key: 0, name: '', score: '', referred: false }],
-  );
+  const [rows, setRows] = useState<PanelRow[]>(() => panelRows(isPrimary ? candidate.primary_panel : candidate.secondary_panel));
   const [category, setCategory] = useState<SelectionCategory | ''>('');
+  const [remarks, setRemarks] = useState(candidate.secondary_feedback ?? '');
   const [dates, setDates] = useState(() => initialRejectionDates());
   const [busy, setBusy] = useState(false);
-
-  const knownNames = useMemo(
-    () => [...new Set(candidates.flatMap((c) => [...c.primary_panel, ...c.secondary_panel].map((entry) => entry.name)).filter(Boolean))].sort(),
-    [candidates],
-  );
-  const patchRow = (key: number, patch: Partial<PanelRow>) => setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)));
-
-  const scores = rows.map((row) => Number(row.score)).filter((score) => score > 0);
-  const average = scores.length ? Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10 : null;
-  const recommended = rows.filter((row) => row.referred).length;
+  const { average, recommended } = panelSummary(rows);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
-    const panel: InterviewerScore[] = rows.map((row) => ({ name: row.name.trim(), score: Number(row.score), referred: row.referred }));
+    const panel = rowsToPanel(rows);
     try {
       await updateCandidate(
         candidate.id,
         isPrimary
           ? setPrimary(result, panelColumns('primary', panel))
           : {
-              ...setSecondary(result, { ...panelColumns('secondary', panel), ...(asksForList ? { selection_category: category as SelectionCategory } : {}) }),
+              ...setSecondary(result, {
+                ...panelColumns('secondary', panel),
+                ...(asksForList ? { selection_category: category as SelectionCategory, secondary_feedback: remarks.trim() } : {}),
+              }),
               ...(locks ? rejectDecision({ ...dates, by: user?.full_name ?? '' }) : {}),
             },
       );
@@ -238,53 +309,7 @@ export function InterviewResultDialog({ candidate, stage, result, onClose }: { c
       }
     >
       <form id="interview-form" onSubmit={submit} className="space-y-3">
-        <datalist id="interviewer-names">{knownNames.map((name) => <option key={name} value={name} />)}</datalist>
-        <ul className="space-y-2">
-          {rows.map((row, index) => (
-            <li key={row.key} className="grid grid-cols-[1fr_5.5rem_auto_2rem] items-end gap-2">
-              <TextInput
-                label={`Interviewer ${index + 1}`}
-                required
-                list="interviewer-names"
-                autoFocus={index === rows.length - 1}
-                value={row.name}
-                onChange={(e) => patchRow(row.key, { name: e.target.value })}
-              />
-              <TextInput
-                label="Score (1-10)"
-                aria-label={`Score from interviewer ${index + 1}`}
-                type="number"
-                required
-                min={1}
-                max={10}
-                inputMode="numeric"
-                value={row.score}
-                onChange={(e) => patchRow(row.key, { score: e.target.value })}
-              />
-              <label className={classNames('flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-sm transition-colors has-focus-visible:outline-2 has-focus-visible:outline-brand-600', row.referred ? 'border-amber-300 bg-amber-50 font-medium text-amber-950' : 'border-line-strong text-ink-soft hover:bg-hover')}>
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  aria-label={`Recommended by interviewer ${index + 1}`}
-                  checked={row.referred}
-                  onChange={(e) => patchRow(row.key, { referred: e.target.checked })}
-                />
-                <Star className={classNames('size-4', row.referred ? 'fill-amber-500 text-amber-500' : 'text-ink-muted')} aria-hidden />
-                Recommended
-              </label>
-              <IconButton
-                label={`Remove interviewer ${index + 1}`}
-                icon={Trash2}
-                disabled={rows.length === 1}
-                className="mb-0.5"
-                onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}
-              />
-            </li>
-          ))}
-        </ul>
-        <Button size="sm" icon={Plus} onClick={() => setRows((current) => [...current, { key: nextKey.current++, name: '', score: '', referred: false }])}>
-          Add more
-        </Button>
+        <PanelEditor rows={rows} onChange={setRows} />
         {asksForList && (
           <div className="border-t border-line pt-3">
             <Select
@@ -298,6 +323,15 @@ export function InterviewResultDialog({ candidate, stage, result, onClose }: { c
               <option value="merit">Merit</option>
               <option value="waiting">Waiting</option>
             </Select>
+            <div className="mt-3">
+              <TextArea
+                label="Remarks (optional)"
+                rows={3}
+                placeholder={category === 'waiting' ? 'Why waiting, e.g. strong second choice, salary expectation higher' : 'Why merit, e.g. best technical answers, can join early'}
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+              />
+            </div>
           </div>
         )}
         {locks && (
@@ -311,7 +345,7 @@ export function InterviewResultDialog({ candidate, stage, result, onClose }: { c
   );
 }
 
-interface RejectionDates {
+export interface RejectionDates {
   rejectedDate: string;
   rejectedTime: string;
   informedDate: string;
@@ -322,7 +356,7 @@ function initialRejectionDates(): RejectionDates {
   return { rejectedDate: todayIso(), rejectedTime: nowTime(), informedDate: todayIso(), informedTime: nowTime() };
 }
 
-function RejectionFields({ dates, onChange }: { dates: RejectionDates; onChange: (dates: RejectionDates) => void }) {
+export function RejectionFields({ dates, onChange }: { dates: RejectionDates; onChange: (dates: RejectionDates) => void }) {
   const set = (patch: Partial<RejectionDates>) => onChange({ ...dates, ...patch });
   return (
     <div className="grid gap-3 sm:grid-cols-2">
@@ -404,6 +438,7 @@ export function JoiningCallDialog({ candidate, onClose }: { candidate: Candidate
   const [joinDate, setJoinDate] = useState(candidate.joining_confirmed_date ?? candidate.joining_date ?? '');
   const [joinTime, setJoinTime] = useState(candidate.joining_confirmed_date ? candidate.joining_confirmed_time : candidate.joining_time);
   const [confirmed, setConfirmed] = useState(candidate.joining_call_date ? Boolean(candidate.joining_confirmed_date) : true);
+  const [remarks, setRemarks] = useState(candidate.joining_remarks ?? '');
   const [busy, setBusy] = useState(false);
 
   async function submit(event: FormEvent) {
@@ -415,6 +450,7 @@ export function JoiningCallDialog({ candidate, onClose }: { candidate: Candidate
         callTime,
         confirmedDate: confirmed ? joinDate : null,
         confirmedTime: joinTime,
+        remarks,
       }));
       toast(confirmed ? `${candidate.full_name}: saved. Joining confirmed.` : `${candidate.full_name}: saved. Waiting for the candidate to confirm a day.`);
       onClose();
@@ -457,6 +493,17 @@ export function JoiningCallDialog({ candidate, onClose }: { candidate: Candidate
           <input type="checkbox" className="size-4 accent-brand-600" checked={!confirmed} onChange={(e) => setConfirmed(!e.target.checked)} />
           The candidate has not confirmed a joining day yet
         </label>
+        <div className="sm:col-span-2">
+          <TextArea
+            label="Remarks (optional)"
+            rows={3}
+            maxLength={2000}
+            value={remarks}
+            onChange={(e) => setRemarks(e.target.value)}
+            placeholder="e.g. Asked for a later day to serve notice; will bring the release letter; salary to be discussed on joining"
+            hint="Shown on the card and in the Selected download."
+          />
+        </div>
       </form>
     </Dialog>
   );
@@ -695,7 +742,13 @@ export function ReviewLinkDialog({ candidate, stage, onClose }: { candidate: Can
       {error && <p role="alert" className="text-sm text-red-800">{error}</p>}
       {link && (
         <div className="space-y-3">
-          <TextInput label="Private link for this candidate" readOnly value={link} onFocus={(e) => e.target.select()} />
+          <TextInput
+            label="Private link for this candidate"
+            hint={`Share it before or after the interview. It works ${REVIEW_CLOSES[stage]}, then closes by itself.`}
+            readOnly
+            value={link}
+            onFocus={(e) => e.target.select()}
+          />
           <TextArea label="Message" rows={4} readOnly value={message} />
           <div className="flex flex-wrap gap-2">
             <Button icon={Copy} onClick={() => void copyText(link).then(() => toast('Link copied.'))}>Copy link</Button>

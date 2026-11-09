@@ -49,7 +49,7 @@ Forgotten passwords are reset from the same Supabase page.
 
 | Role | Can do |
 |---|---|
-| Admin | Everything, including settings, team, the AI key, deleting records and unlocking a final decision |
+| Admin | Everything, including settings, team, the AI key, deleting records, unlocking a final decision and approving corrections |
 | HR | The whole hiring process; cannot delete candidates or change company settings |
 | Viewer | Read only |
 | Pending | Nothing, until an admin assigns a role |
@@ -140,14 +140,21 @@ Things to know about Vercel:
 | The call and the candidate's answer | **Candidate confirmed** or **Candidate rejected** on the card asks when you called and when they answered, each with a day and a time. **Follow up** is for no answer yet |
 | Knowing a step is saved | Each step saves when you press Save in its dialog. The card then says when it was saved and where the candidate is now; **Save and close** leaves the card |
 | Interview schedule and its message | **Set interview schedule**, for both rounds. Also prepares the message; **Change schedule** moves an interview |
-| Candidate experience form | **Ask for feedback** on the card creates a private link; answers appear under **Candidate Reviews** |
+| Candidate experience form | **Ask for feedback** on the card creates a private link; answers appear under **Candidate Reviews**. It can be shared before or after the interview, from the primary schedule on. The primary link closes when the final interview is scheduled, the final link when the final decision is made; a closed link says so and the database refuses answers sent to it |
+| Dashboard tiles | Point at a tile for a quick look; click it for the full details in a window over the dashboard, with charts and tables, without leaving the page. **Open requisitions** counts the same as "Still open" on the Requisitions page (anything not filled or cancelled, On hold included). **Interviews, next 7 days** and **Calendar** on Upcoming interviews open a month calendar with every interview day marked; choose a day to see who comes when |
 | Filter by experience, salary range, industry, keyword | Above the table in a CV bucket. A slider at its ends means no limit; once narrowed, a CV with no figure on record cannot match, and the line under the filters says how many that left out. Clicking a source above them filters by source |
 | Several interviewers, each with a score and a Recommended star | The interview result on the card; **Add more** adds an interviewer. Every interviewer is one star: full if they recommend the candidate, blank if not. Hover the stars for names |
 | Time spent on each CV review | Counted only while the CV is new: from opening its card until **Select**, **Reject** or closing it. Opening the card again for later steps adds nothing. If a new CV is closed and reopened, both sittings add up. Shown on the row, in **History**, and as an average per CV on the dashboard. Viewers are not timed |
-| Merit and waiting lists | Chosen when marking the final interview as selected, and changeable on the card until the decision. Letters go to Merit only |
+| Merit and waiting lists | Chosen when marking the final interview as selected, with optional **Remarks** on why. Changeable on the card until the decision. Letters go to Merit only. The remarks show on the card, on the dashboard and in the Selected download |
 | Final decision | **Send confirmation letter** asks when they were selected and when they join; **Reject** asks when they were rejected and informed. Either one locks the whole process, in the database as well as on screen |
 | Joining call | After the letter, **Call for joining** records when HR called and the joining day and time the candidate confirmed. That can differ from the day in the letter, which stays as it was; the letters and the Selected list then use the confirmed day. If the candidate has not settled a day yet, only the call is recorded |
 | After the lock | Only the joining call and **Joining details** stay open: salary, employee ID, documents received, and whether they joined. **Did not confirm** there opens the vacancy again, and the **Selected** page points to the waiting list. An admin can **Unlock** a decision made by mistake |
+| Remarks on the joining call | **Remarks** in **Call for joining**: a condition, why the day moved, anything worth keeping. Shown on the card and in the Selected download |
+| A step entered wrongly | **Ask to correct a step** on the card: choose the step and say what is wrong. Admins (GM, AGM, DGM) are told, and **Approve** or **Turn down** it on the card or from the dashboard. The person who asked then gets **Correct now**, for that step's dates, times, scores and notes, once, even after the lock. History keeps every value before and after. The database enforces all of it |
+| Units, departments, sections, subsections | **Settings > Units and departments**: CHO, TAL, BGL, RHL and MGL, each typed as an indented outline with a preview like the company chart. Requisitions and buckets choose from them one level after another |
+| The vacancy status sheet | **Requisitions > Sync vacancy sheet** reads the VACANCY sheet of the Excel file into requisitions, matched on SL, so the same sheet can be synced every month without doubles. It shows what it read and anything worth a look before saving. **Download as the vacancy sheet** gives the list back in the sheet's own columns |
+| Finding buckets by date | **CV Buckets**: filter by unit, year and month created, and group by month or year. The filters stay in the link |
+| Deleting a CV bucket | The bin icon on a bucket. HR can delete an empty bucket; one with CVs needs an admin, who types its name to confirm. Its CVs, their files and history go with it. **Archived** keeps them instead |
 | Block C: selected database, download, sort | **Selected** |
 | Question library: written, MCQ and interview questions | **Question library**. Each question has its marks, difficulty, topic, and the department and post it suits (blank means any). MCQs keep their right answer; written and interview questions keep a model answer. Tick questions and **Make question paper** prints a paper with name lines, with the answer key on a separate page, or with the answers under each question for the interview panel. During an interview step the card has **Interview questions**, filtered to that post |
 | Who did what, and who is working on what now | **Team activity** |

@@ -6,6 +6,8 @@ import type {
   CvBucket,
   Designation,
   DocumentTemplate,
+  EditRequest,
+  EditStep,
   JobPosting,
   MessageTemplate,
   Profile,
@@ -34,7 +36,7 @@ export const CANDIDATE_LIST_COLUMNS = [
   'secondary_message_status', 'secondary_message_sent_at', 'secondary_status', 'secondary_date', 'secondary_time',
   'secondary_interviewer', 'secondary_score', 'secondary_feedback', 'secondary_panel', 'selection_category',
   'final_decision', 'decision_date', 'decision_time', 'informed_date', 'informed_time', 'decided_by', 'decided_at', 'review_seconds', 'review_count',
-  'joining_status', 'joining_date', 'joining_time', 'joining_call_date', 'joining_call_time', 'joining_confirmed_date', 'joining_confirmed_time', 'offered_salary',
+  'joining_status', 'joining_date', 'joining_time', 'joining_call_date', 'joining_call_time', 'joining_confirmed_date', 'joining_confirmed_time', 'joining_remarks', 'offered_salary',
   'employee_code', 'probation_period', 'reporting_to', 'documents_received', 'offer_sent_at', 'selected_at', 'created_at',
 ].join(',');
 
@@ -54,6 +56,8 @@ interface Data {
   notifications: AppNotification[];
   /** The question library. */
   questions: Question[];
+  /** Correction requests, newest first. */
+  editRequests: EditRequest[];
 }
 
 const EMPTY: Data = {
@@ -69,6 +73,7 @@ const EMPTY: Data = {
   team: [],
   notifications: [],
   questions: [],
+  editRequests: [],
 };
 
 interface StoreValue extends Data {
@@ -103,7 +108,10 @@ interface StoreValue extends Data {
   savePosting: (row: Partial<JobPosting>) => Promise<JobPosting>;
   removePosting: (id: string) => Promise<void>;
   saveBucket: (row: Partial<CvBucket>) => Promise<CvBucket>;
+  /** Deletes a bucket with every CV in it, and their files. A bucket with CVs needs an admin. */
   removeBucket: (id: string) => Promise<void>;
+  /** Saves many requisitions at once, matched on the vacancy sheet's key. */
+  syncRequisitions: (rows: Partial<Requisition>[]) => Promise<number>;
   saveQuestion: (row: Partial<Question>) => Promise<Question>;
   removeQuestion: (id: string) => Promise<void>;
 
@@ -112,6 +120,15 @@ interface StoreValue extends Data {
   saveDocumentTemplate: (row: DocumentTemplate) => Promise<void>;
   reviewLink: (candidateId: string, stage: 'primary' | 'secondary') => Promise<string>;
   logReviewSession: (candidateId: string, startedAt: string, endedAt: string) => Promise<void>;
+
+  /** Asks an admin to approve correcting one step. */
+  requestEdit: (candidateId: string, step: EditStep, reason: string) => Promise<void>;
+  /** An admin approves or turns down a correction request. */
+  decideEdit: (requestId: string, approve: boolean, note?: string) => Promise<void>;
+  /** Withdraws one's own open request. */
+  cancelEdit: (requestId: string) => Promise<void>;
+  /** Applies an approved correction: only the changed fields of its step. */
+  applyEdit: (requestId: string, changes: Partial<Candidate>) => Promise<void>;
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -157,7 +174,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [refreshUser]);
 
   const reload = useCallback(async () => {
-    const [settingsRows, messageTemplates, documentTemplates, designations, requisitions, postings, buckets, candidates, reviews, team, notifications, questions] = await Promise.all([
+    const [settingsRows, messageTemplates, documentTemplates, designations, requisitions, postings, buckets, candidates, reviews, team, notifications, questions, editRequests] = await Promise.all([
       backend.list<Settings>('settings', { order: { column: 'id' } }),
       backend.list<MessageTemplate>('message_templates', { order: { column: 'key' } }),
       backend.list<DocumentTemplate>('document_templates', { order: { column: 'sort_order' } }),
@@ -172,9 +189,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         ? backend.list<AppNotification>('notifications', { match: { recipient_id: userId }, order: { column: 'created_at', ascending: false }, limit: NOTIFICATION_LIMIT })
         : Promise.resolve([]),
       backend.list<Question>('questions', { order: { column: 'created_at', ascending: false } }),
+      // Before schema.sql is run again after this update, the table is missing: the rest of the app still works.
+      backend.list<EditRequest>('edit_requests', { order: { column: 'created_at', ascending: false } }).catch(() => [] as EditRequest[]),
     ]);
+    const stored = settingsRows[0];
     setData({
-      settings: settingsRows[0] ?? EMPTY.settings,
+      // Settings saved before units existed have no structure yet.
+      settings: stored ? { ...stored, org_structure: stored.org_structure ?? [] } : EMPTY.settings,
       messageTemplates,
       documentTemplates,
       designations,
@@ -186,6 +207,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       team,
       notifications,
       questions,
+      editRequests,
     });
     return;
   }, [userId]);
@@ -279,9 +301,71 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const removeCandidate = useCallback(async (id: string) => {
+    const candidate = dataRef.current.candidates.find((c) => c.id === id);
     await backend.remove('candidates', { id });
     setData((state) => ({ ...state, candidates: state.candidates.filter((c) => c.id !== id) }));
+    // The CV and photo go too. The record is already gone, so a file that cannot be removed is no reason to fail.
+    const files = [candidate?.cv_path, candidate?.photo_path].filter((path): path is string => Boolean(path));
+    if (files.length > 0) await backend.removeFiles(files).catch(() => undefined);
   }, []);
+
+  const removeBucket = useCallback(async (id: string) => {
+    const inside = dataRef.current.candidates.filter((c) => c.bucket_id === id);
+    if (inside.length > 0) {
+      await backend.remove('candidates', { bucket_id: id });
+      // The database deletes nothing for someone not allowed to: check before going on.
+      const left = await backend.list<{ id: string }>('candidates', { select: 'id', match: { bucket_id: id }, limit: 1 });
+      if (left.length > 0) throw new Error('This bucket still holds CVs, and only an admin can delete CVs. Ask an admin, or archive the bucket instead.');
+      setData((state) => ({ ...state, candidates: state.candidates.filter((c) => c.bucket_id !== id) }));
+    }
+    await backend.remove('cv_buckets', { id });
+    setData((state) => ({ ...state, buckets: state.buckets.filter((b) => b.id !== id) }));
+    const files = inside.flatMap((c) => [c.cv_path, c.photo_path]).filter((path): path is string => Boolean(path));
+    if (files.length > 0) await backend.removeFiles(files).catch(() => undefined);
+  }, []);
+
+  const syncRequisitions = useCallback(async (rows: Partial<Requisition>[]) => {
+    let saved = 0;
+    // In parts, so a long sheet stays within what one request may carry.
+    for (let i = 0; i < rows.length; i += 100) {
+      const done = await backend.upsert<Requisition>('requisitions', rows.slice(i, i + 100), 'sheet_key');
+      saved += done.length;
+    }
+    const requisitions = await backend.list<Requisition>('requisitions', { order: { column: 'created_at', ascending: false } });
+    setData((state) => ({ ...state, requisitions }));
+    return saved;
+  }, []);
+
+  const refreshEdits = useCallback(async () => {
+    const editRequests = await backend.list<EditRequest>('edit_requests', { order: { column: 'created_at', ascending: false } });
+    setData((state) => ({ ...state, editRequests }));
+  }, []);
+
+  const requestEdit = useCallback(async (candidateId: string, step: EditStep, reason: string) => {
+    await backend.rpc('request_edit', { p_candidate: candidateId, p_step: step, p_reason: reason });
+    await refreshEdits();
+  }, [refreshEdits]);
+
+  const decideEdit = useCallback(async (requestId: string, approve: boolean, note = '') => {
+    await backend.rpc('decide_edit', { p_request: requestId, p_approve: approve, p_note: note });
+    await refreshEdits();
+  }, [refreshEdits]);
+
+  const cancelEdit = useCallback(async (requestId: string) => {
+    await backend.rpc('cancel_edit', { p_request: requestId });
+    await refreshEdits();
+  }, [refreshEdits]);
+
+  const applyEdit = useCallback(async (requestId: string, changes: Partial<Candidate>) => {
+    const request = await backend.rpc<EditRequest>('apply_edit', { p_request: requestId, p_changes: changes });
+    const fresh = await backend.get<Candidate>('candidates', { id: request.candidate_id });
+    if (fresh) {
+      const { raw_text: _rawText, sections: _sections, ...light } = fresh;
+      setData((state) => ({ ...state, candidates: state.candidates.map((c) => (c.id === fresh.id ? { ...c, ...light } as Candidate : c)) }));
+      setLastSave({ id: fresh.id, at: Date.now() });
+    }
+    await refreshEdits();
+  }, [refreshEdits]);
 
   const saveRow = useCallback(
     async <T extends { id: string }>(table: TableName, key: keyof Data, row: Partial<T>): Promise<T> => {
@@ -351,7 +435,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       savePosting: (row) => saveRow<JobPosting>('job_postings', 'postings', row),
       removePosting: (id) => removeRow('job_postings', 'postings', id),
       saveBucket: (row) => saveRow<CvBucket>('cv_buckets', 'buckets', row),
-      removeBucket: (id) => removeRow('cv_buckets', 'buckets', id),
+      removeBucket,
+      syncRequisitions,
       saveQuestion: (row) => saveRow<Question>('questions', 'questions', row),
       removeQuestion: (id) => removeRow('questions', 'questions', id),
       saveSettings: async (patch) => {
@@ -390,8 +475,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return `${location.origin}/review/${review.token}`;
       },
       logReviewSession,
+      requestEdit,
+      decideEdit,
+      cancelEdit,
+      applyEdit,
     }),
-    [data, user, loadingUser, loadingData, loadError, canWrite, lastSave, reload, refreshUser, updateCandidate, updateCandidates, addCandidates, removeCandidate, saveRow, removeRow, merge, logReviewSession, markNotificationsRead],
+    [data, user, loadingUser, loadingData, loadError, canWrite, lastSave, reload, refreshUser, updateCandidate, updateCandidates, addCandidates, removeCandidate, removeBucket, syncRequisitions, requestEdit, decideEdit, cancelEdit, applyEdit, saveRow, removeRow, merge, logReviewSession, markNotificationsRead],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

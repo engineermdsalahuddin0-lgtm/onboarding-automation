@@ -9,6 +9,7 @@ import {
   Download,
   ExternalLink,
   Eye,
+  FilePen,
   FileQuestion,
   FileText,
   Lock,
@@ -27,12 +28,13 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { useNavigate } from 'react-router-dom';
 import { backend } from '../lib/backend';
 import { classNames, dateMedium, dateTime, duration, money, whenText } from '../lib/format';
-import { CATEGORY_LABELS, isLocked, JOINING, setCategory, shortlist, stageOf, stepBack, unlockDecision } from '../lib/pipeline';
+import { CATEGORY_LABELS, correctableSteps, EDIT_STEP_LABELS, isLocked, JOINING, openReviewStage, setCategory, shortlist, stageOf, stepBack, unlockDecision } from '../lib/pipeline';
 import { usePresence } from '../lib/presence';
 import { useFileUrls, useReviewTimer, useStore } from '../lib/store';
 import { handlerNames, personName, processTeam } from '../lib/team';
 import { HelpTip, useGuide } from './Guide';
-import type { Candidate, CandidateEvent, CvReviewSession, InterviewerScore, MessageLogEntry } from '../types';
+import type { Candidate, CandidateEvent, CvReviewSession, EditStep, InterviewerScore, MessageLogEntry } from '../types';
+import { CorrectionsStrip, RequestCorrectionDialog } from './Corrections';
 import { HandoverDialog } from './HandoverDialog';
 import { CallDialog, DecisionDialog, InterviewResultDialog, JoiningCallDialog, JoiningDialog, ReviewLinkDialog, ScheduleDialog, ScreeningRejectDialog } from './PipelineDialogs';
 import { ProcessBar } from './ProcessBar';
@@ -167,12 +169,13 @@ function DetailsTab({ c }: { c: Candidate }) {
               ['Primary feedback', c.primary_feedback],
               ['Final interview on', whenText(c.secondary_date, c.secondary_time)],
               ['Final score', c.secondary_score !== null ? `${c.secondary_score}/10` : ''],
-              ['Final feedback', c.secondary_feedback],
+              ['Final interview remarks', c.secondary_feedback],
               ['Selection list', c.selection_category ? CATEGORY_LABELS[c.selection_category] : ''],
               ['Selected on', c.final_decision === 'confirmed' ? whenText(c.decision_date, c.decision_time) : ''],
               ['Offered joining', c.final_decision === 'confirmed' ? whenText(c.joining_date, c.joining_time) : ''],
               ['Called for joining on', whenText(c.joining_call_date, c.joining_call_time)],
               ['Candidate confirmed joining on', whenText(c.joining_confirmed_date, c.joining_confirmed_time)],
+              ['Joining remarks', c.joining_remarks],
               ['Offered salary', money(c.offered_salary)],
             ]}
           />
@@ -329,11 +332,20 @@ function HistoryTab({ c }: { c: Candidate }) {
     <div className="space-y-4">
       <ol className="space-y-2.5">
         {events.map((event) => (
-          <li key={event.id} className="border-l-2 border-line pl-3 text-sm">
-            <p>
-              <span className="font-medium">{FIELD_NAMES[event.field] ?? event.field}</span>
-              {event.to_value && event.field !== 'bucket_id' && <>: {VALUE_NAMES[event.to_value] ?? event.to_value}</>}
-            </p>
+          <li key={event.id} className={classNames('border-l-2 pl-3 text-sm', event.field === 'correction' ? 'border-amber-400' : 'border-line')}>
+            {event.field === 'correction' ? (
+              <>
+                <p><span className="font-medium">Correction, approved: {EDIT_STEP_LABELS[event.from_value as EditStep] ?? event.from_value}</span></p>
+                <ul className="mt-0.5 text-xs text-ink-soft">
+                  {(event.to_value ?? '').split('; ').filter(Boolean).map((change) => <li key={change} className="break-words">{change.replace(' -> ', ' → ')}</li>)}
+                </ul>
+              </>
+            ) : (
+              <p>
+                <span className="font-medium">{FIELD_NAMES[event.field] ?? event.field}</span>
+                {event.to_value && event.field !== 'bucket_id' && <>: {VALUE_NAMES[event.to_value] ?? event.to_value}</>}
+              </p>
+            )}
             <p className="text-xs text-ink-muted">{dateTime(event.created_at)}{event.actor_name ? ` · ${event.actor_name}` : ''}</p>
           </li>
         ))}
@@ -378,7 +390,8 @@ type StepModal =
   | { kind: 'review'; stage: 'primary' | 'secondary' }
   | { kind: 'joining' }
   | { kind: 'joiningCall' }
-  | { kind: 'unlock' };
+  | { kind: 'unlock' }
+  | { kind: 'requestCorrection' };
 
 type PanelTone = 'current' | 'good' | 'bad' | 'muted';
 
@@ -435,6 +448,7 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
         {dates.map(([label, value]) => (
           <span key={label} className="block">{label} <strong className="tabular">{value}</strong></span>
         ))}
+        {c.joining_remarks && <span className="block whitespace-pre-wrap sm:col-span-2">Remarks: <strong className="font-medium">{c.joining_remarks}</strong></span>}
       </span>
     );
     actions = (
@@ -536,7 +550,12 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
   } else if (c.selection_category === 'waiting') {
     icon = ClipboardList;
     title = 'On the waiting list';
-    body = 'Move to Merit when a place opens, to send the confirmation letter.';
+    body = (
+      <>
+        Move to Merit when a place opens, to send the confirmation letter.
+        {c.secondary_feedback && <span className="mt-1 block whitespace-pre-wrap">Remarks: <strong className="font-medium">{c.secondary_feedback}</strong></span>}
+      </>
+    );
     actions = (
       <>
         <Button variant="primary" icon={Check} onClick={() => run(setCategory(c, 'merit'), `${c.full_name} moved to Merit.`)}>Move to Merit</Button>
@@ -546,7 +565,12 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
   } else {
     icon = FileText;
     title = 'Final decision';
-    body = 'On the merit list. Send the confirmation letter, or reject. Either one locks the process.';
+    body = (
+      <>
+        On the merit list. Send the confirmation letter, or reject. Either one locks the process.
+        {c.secondary_feedback && <span className="mt-1 block whitespace-pre-wrap">Remarks: <strong className="font-medium">{c.secondary_feedback}</strong></span>}
+      </>
+    );
     tip = 'Send confirmation letter is the final acceptance: it asks when they were selected and when they join. Reject is the final rejection: it asks when it was decided and when they were told. Either one locks the process; only an admin can unlock it.';
     actions = (
       <>
@@ -558,7 +582,8 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
   }
 
   const Icon = icon;
-  const feedbackStage = canProcess && (c.secondary_status === 'selected' || c.secondary_status === 'rejected' ? 'secondary' : c.primary_status === 'selected' || c.primary_status === 'rejected' ? 'primary' : null);
+  // The feedback link can be shared before or after the interview, while the candidate is still at that step.
+  const feedbackStage = canProcess ? openReviewStage(c) : null;
   // The locked panel's letter button is for everyone; elsewhere the buttons are for whoever does the step.
   const showActions = Boolean(actions) && canWrite && (mine || c.final_decision === 'confirmed');
   const waitingFor = canWrite && !mine && actions && c.screening_status !== 'new' && c.final_decision === null ? handlerNames(c, team) : '';
@@ -567,6 +592,8 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
     (c.message_status === 'message_done' && (c.primary_status === 'pending' || c.primary_status === 'scheduled')) ||
     (c.primary_status === 'selected' && (c.secondary_status === 'pending' || c.secondary_status === 'scheduled')));
   const designation = buckets.find((b) => b.id === c.bucket_id)?.designation ?? '';
+  // A step recorded wrongly is corrected after an admin approves; the process team asks, for the steps it records.
+  const correctable = canProcess && correctableSteps(c).length > 0;
 
   return (
     <div className={classNames('rounded-xl border px-4 py-3', PANEL[tone])}>
@@ -579,7 +606,7 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
         </div>
         {showActions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
       </div>
-      {canWrite && (previous || feedbackStage || interviewing || (isLocked(c) && isAdmin)) && (
+      {canWrite && (previous || feedbackStage || interviewing || correctable || (isLocked(c) && isAdmin)) && (
         <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-black/5 pt-1.5">
           {interviewing && (
             <Button size="sm" variant="ghost" icon={FileQuestion} onClick={() => navigate(`/questions?kind=interview&designation=${encodeURIComponent(designation)}`)}>
@@ -598,6 +625,11 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
             </Button>
           )}
           {feedbackStage && <Button size="sm" variant="ghost" icon={MessageSquareHeart} onClick={() => open({ kind: 'review', stage: feedbackStage })}>Ask for feedback</Button>}
+          {correctable && (
+            <Button size="sm" variant="ghost" icon={FilePen} title="A date, score or note was entered wrongly: ask an admin to let you correct it" onClick={() => open({ kind: 'requestCorrection' })}>
+              Ask to correct a step
+            </Button>
+          )}
           {isLocked(c) && isAdmin && <Button size="sm" variant="ghost" icon={LockOpen} className="ml-auto" onClick={() => open({ kind: 'unlock' })}>Unlock (admin)</Button>}
         </div>
       )}
@@ -768,6 +800,7 @@ export function CandidateCard({ candidateId, onClose }: { candidateId: string; o
           </p>
         )}
         <div data-tour="card-next" className="mt-2"><NextStep c={c} open={setModal} /></div>
+        <CorrectionsStrip candidate={c} />
       </div>
 
       {c.parse_warnings.length > 0 && (
@@ -814,6 +847,7 @@ export function CandidateCard({ candidateId, onClose }: { candidateId: string; o
       {modal?.kind === 'review' && <ReviewLinkDialog candidate={c} stage={modal.stage} onClose={closeModal} />}
       {modal?.kind === 'joining' && <JoiningDialog candidate={c} onClose={closeModal} />}
       {modal?.kind === 'joiningCall' && <JoiningCallDialog candidate={c} onClose={closeModal} />}
+      {modal?.kind === 'requestCorrection' && <RequestCorrectionDialog candidate={c} onClose={closeModal} />}
       {modal?.kind === 'unlock' && (
         <Confirm
           danger

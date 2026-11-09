@@ -1,5 +1,6 @@
 import { Check, KeyRound, RotateCcw, Upload } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { OrgStructureEditor } from '../components/OrgStructureEditor';
 import { Button, Card, Confirm, errorText, PageHeader, Select, StatusBadge, TABLE, Tabs, TD, TextArea, TextInput, TH, THEAD, useToast } from '../components/ui';
 import { backend } from '../lib/backend';
 import { aiHeaders } from '../lib/cv';
@@ -8,7 +9,7 @@ import { useFileUrls, useStore } from '../lib/store';
 import { DESK_LABELS } from '../lib/team';
 import type { Desk, DocumentTemplate, MessageTemplate, Profile, Role } from '../types';
 
-type Tab = 'company' | 'messages' | 'documents' | 'ai' | 'team';
+type Tab = 'company' | 'units' | 'messages' | 'documents' | 'ai' | 'team';
 
 const lines = (text: string) => text.split('\n').map((line) => line.trim()).filter(Boolean);
 
@@ -33,7 +34,8 @@ function CompanyTab() {
     event.preventDefault();
     setBusy(true);
     try {
-      const { companiesText, departmentsText, mediaText, maxFilesText, batchSizeText, batchPauseText, id: _id, updated_at: _updated, seal_path: _seal, ...rest } = form;
+      // The structure is saved from its own tab; leaving it out here keeps the two from overwriting each other.
+      const { companiesText, departmentsText, mediaText, maxFilesText, batchSizeText, batchPauseText, id: _id, updated_at: _updated, seal_path: _seal, org_structure: _structure, ...rest } = form;
       // Kept within what the database accepts, so a typo cannot block saving the rest.
       const whole = (text: string, min: number, max: number, fallback: number) => {
         const number = Math.round(Number(text));
@@ -111,7 +113,7 @@ function CompanyTab() {
       <Card title="Lists">
         <div className="grid gap-3 sm:grid-cols-3">
           <TextArea label="Companies (one per line)" rows={6} disabled={disabled} value={form.companiesText} onChange={(e) => set({ companiesText: e.target.value })} />
-          <TextArea label="Departments (one per line)" rows={6} disabled={disabled} value={form.departmentsText} onChange={(e) => set({ departmentsText: e.target.value })} />
+          <TextArea label="Departments (one per line)" hint="Offered when no unit is chosen, or the unit has no departments under Units and departments." rows={6} disabled={disabled} value={form.departmentsText} onChange={(e) => set({ departmentsText: e.target.value })} />
           <TextArea label="Job posting media (one per line)" rows={6} disabled={disabled} value={form.mediaText} onChange={(e) => set({ mediaText: e.target.value })} />
         </div>
       </Card>
@@ -415,6 +417,7 @@ export function SettingsPage() {
         onChange={setTab}
         items={[
           { value: 'company', label: 'Company' },
+          { value: 'units', label: 'Units and departments' },
           { value: 'messages', label: 'Messages' },
           { value: 'documents', label: 'Joining documents' },
           { value: 'ai', label: 'AI' },
@@ -423,6 +426,7 @@ export function SettingsPage() {
       />
       <div className="mt-4">
         {tab === 'company' && <CompanyTab />}
+        {tab === 'units' && <OrgStructureEditor />}
         {tab === 'messages' && <MessagesTab />}
         {tab === 'documents' && <DocumentsTab />}
         {tab === 'ai' && <AiTab />}

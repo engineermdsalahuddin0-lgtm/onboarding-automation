@@ -13,6 +13,8 @@ tests/.tmp/
 # Real applicants' CVs and mail data: keep them out of any repository Vercel deploys from.
 src/assets/cv/
 recruitment-data/
+data/
+/data
 
 # Local assistant settings: not part of the app.
 .claude/

@@ -1,4 +1,5 @@
 import type { DocumentTemplate, MessageTemplate, Settings } from '../types';
+import { DEFAULT_ORG_STRUCTURE } from './org';
 
 export const DOCUMENT_CHECKLIST = [
   'NID (Self 2 Copy & Nominee 2 Copy)',
@@ -29,6 +30,7 @@ export const DEFAULT_SETTINGS: Omit<Settings, 'id'> = {
   upload_max_files: 1000,
   upload_batch_size: 50,
   upload_batch_pause: 10,
+  org_structure: DEFAULT_ORG_STRUCTURE,
 };
 
 // Wording comes from src/assets/images/sample_message_for_onboarding.txt; only the

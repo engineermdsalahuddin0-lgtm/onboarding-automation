@@ -15,7 +15,8 @@ export type TableName =
   | 'candidate_reviews'
   | 'cv_review_sessions'
   | 'notifications'
-  | 'questions';
+  | 'questions'
+  | 'edit_requests';
 
 export interface ListOptions {
   /** Comma-separated column list. Omit for every column. */
@@ -34,7 +35,11 @@ export type RpcName =
   | 'get_review_invite'
   | 'submit_review'
   | 'set_ai_key'
-  | 'ai_key_status';
+  | 'ai_key_status'
+  | 'request_edit'
+  | 'decide_edit'
+  | 'cancel_edit'
+  | 'apply_edit';
 
 /** Everything the app needs from a data store. Supabase in production, the browser in demo mode. */
 export interface Backend {
@@ -54,6 +59,8 @@ export interface Backend {
   rpc<T>(name: RpcName, args: Record<string, unknown>): Promise<T>;
 
   upload(path: string, file: Blob, contentType: string): Promise<void>;
+  /** Deletes stored files. Admins only; paths that do not exist are ignored. */
+  removeFiles(paths: string[]): Promise<void>;
   /** Returns a temporary link per storage path. Paths that cannot be signed are left out. */
   signedUrls(paths: string[]): Promise<Record<string, string>>;
   /** Fires when another user changes shared data. */

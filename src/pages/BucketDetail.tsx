@@ -1,7 +1,8 @@
-import { AlertTriangle, ArrowLeft, Calendar, Check, Copy, Download, Link2, Pencil, Search, Upload, Users, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Calendar, Check, Copy, Download, Link2, Pencil, Search, Trash2, Upload, Users, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { BucketFormDialog } from '../components/BucketForm';
+import { DeleteBucketDialog } from '../components/DeleteBucketDialog';
 import { BulkUploadDialog } from '../components/BulkUpload';
 import { HelpTip } from '../components/Guide';
 import { HandoverDialog } from '../components/HandoverDialog';
@@ -12,6 +13,7 @@ import { backend } from '../lib/backend';
 import { downloadXlsx, type ExportColumn } from '../lib/export';
 import { candidateSalary, hasFilters, INDUSTRY_NOT_STATED, matchesFilters, NO_FILTERS, sliderBounds, usesExperienceFilter, usesSalaryFilter, type CandidateFilters } from '../lib/filters';
 import { classNames, dateMedium, duration, money, todayIso, whenText } from '../lib/format';
+import { placeText } from '../lib/org';
 import { bucketStats, can, CATEGORY_LABELS, isRejected, matchesStageFilter, nextAction, processPosition, recommendationCount, rejectScreening, shortlist, stageOf, type StageFilter } from '../lib/pipeline';
 import { useFileUrls, useStore } from '../lib/store';
 import { handlerNames, processTeam } from '../lib/team';
@@ -24,7 +26,8 @@ type Modal =
   | { kind: 'reject'; candidates: Candidate[] }
   | { kind: 'handover'; candidates: Candidate[] }
   | { kind: 'upload' }
-  | { kind: 'edit' };
+  | { kind: 'edit' }
+  | { kind: 'delete' };
 
 const STAGES: { value: StageFilter; label: string; help: string }[] = [
   { value: 'all', label: 'All', help: 'Everyone in this bucket. Click a row to open the candidate\'s card and move them to the next step.' },
@@ -99,7 +102,7 @@ function RangeFilter({ label, bounds, step, from, to, format, onChange }: {
 export function BucketDetailPage() {
   const { id } = useParams();
   const [params, setParams] = useSearchParams();
-  const { buckets, candidates, postings, requisitions, team, user, canWrite, canScreen, canProcess, updateCandidates } = useStore();
+  const { buckets, candidates, postings, requisitions, team, user, canWrite, canScreen, canProcess, isAdmin, updateCandidates } = useStore();
   const toast = useToast();
 
   const bucket = buckets.find((b) => b.id === id);
@@ -227,6 +230,7 @@ export function BucketDetailPage() {
             {canWrite && <ActionIcon label="Edit bucket" icon={Pencil} onClick={() => setModal({ kind: 'edit' })} />}
             <ActionIcon data-tour="bucket-link" label="Copy application link" icon={Link2} onClick={() => void copyText(applyLink).then(() => toast('Application form link copied.'))} />
             <ActionIcon label="Download" icon={Download} disabled={visible.length === 0} onClick={() => void downloadXlsx(visible, EXPORT_COLUMNS, `${bucket.designation}-${todayIso()}.xlsx`, bucket.designation)} />
+            {canWrite && (isAdmin || items.length === 0) && <ActionIcon label="Delete bucket" icon={Trash2} onClick={() => setModal({ kind: 'delete' })} />}
             {canScreen && <ActionIcon data-tour="bucket-upload" label="Upload CVs" icon={Upload} primary onClick={() => setModal({ kind: 'upload' })} />}
             <HelpTip label="How to use this CV bucket">
               <span className="block">This is the CV bank for one position.</span>
@@ -238,7 +242,7 @@ export function BucketDetailPage() {
         }
         description={
           <>
-            {[bucket.department, bucket.company].filter(Boolean).join(' · ')}
+            {[placeText({ unit: bucket.unit, department: bucket.department, section: bucket.section, subsection: bucket.subsection }), bucket.company].filter(Boolean).join(' · ')}
             {' · '}Created {dateMedium(bucket.created_at)}
             {requisition && <> · <Link className="underline" to="/requisitions">{requisition.ref_no}</Link> ({requisition.vacancies} vacanc{requisition.vacancies === 1 ? 'y' : 'ies'})</>}
           </>
@@ -512,6 +516,7 @@ export function BucketDetailPage() {
       {modal?.kind === 'handover' && <HandoverDialog candidates={modal.candidates} mode="select" onClose={() => setModal(null)} onDone={() => setSelection(new Set())} />}
       {modal?.kind === 'upload' && <BulkUploadDialog bucketId={bucket.id} onClose={() => setModal(null)} />}
       {modal?.kind === 'edit' && <BucketFormDialog bucket={bucket} onClose={() => setModal(null)} />}
+      {modal?.kind === 'delete' && <DeleteBucketDialog bucket={bucket} onClose={() => setModal(null)} />}
     </>
   );
 }

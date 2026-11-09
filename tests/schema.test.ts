@@ -381,10 +381,11 @@ describe('candidate review form', () => {
   it('works once per link and shows no private data', async () => {
     const bucket = await makeBucket('review-1');
     const candidate = await addCandidate(bucket, 'Rahim Uddin');
+    await as(HR, `update candidates set screening_status = 'shortlisted', call_status = 'confirm', message_status = 'message_done' where id = $1`, [candidate]);
     const [{ token }] = await as(HR, `insert into candidate_reviews (candidate_id, stage) values ($1, 'primary') returning token`, [candidate]);
 
     const [{ r: invite }] = await as(null, 'select get_review_invite($1) as r', [token]);
-    expect(invite).toEqual({ first_name: 'Rahim', designation: 'Jr. Executive', group_name: 'Bitopi Group', stage: 'primary', submitted: false });
+    expect(invite).toEqual({ first_name: 'Rahim', designation: 'Jr. Executive', group_name: 'Bitopi Group', stage: 'primary', submitted: false, open: true });
 
     const send = () => as(null, `select submit_review($1, 5, 4, 5, 3, true, 'Good') as r`, [token]);
     await send();
@@ -394,6 +395,46 @@ describe('candidate review form', () => {
     expect(saved).toMatchObject({ overall: 5, comments: 'Good' });
     expect(saved.submitted_at).not.toBeNull();
     expect((await as(null, 'select get_review_invite($1) as r', [token]))[0].r.submitted).toBe(true);
+  });
+
+  it('can be shared before the interview, and closes once the candidate moves on', async () => {
+    const bucket = await makeBucket('review-2');
+    const candidate = await addCandidate(bucket, 'Karim Miah');
+    const link = async (stage: string) => (await as(HR, `insert into candidate_reviews (candidate_id, stage) values ($1, $2) returning token`, [candidate, stage]))[0].token;
+    const invite = async (token: string) => (await as(null, 'select get_review_invite($1) as r', [token]))[0].r;
+    const send = (token: string) => as(null, `select submit_review($1, 4, null, null, null, null, '') as r`, [token]);
+
+    // Before the primary schedule there is no interview to ask about.
+    const primary = await link('primary');
+    expect((await invite(primary)).open).toBe(false);
+    await expect(send(primary)).rejects.toThrow(/closed/);
+
+    // Scheduled, not yet held: the link works.
+    await as(HR, `update candidates set screening_status = 'shortlisted', call_status = 'confirm', message_status = 'message_done',
+      primary_status = 'scheduled', primary_date = current_date + 1 where id = $1`, [candidate]);
+    expect((await invite(primary)).open).toBe(true);
+
+    // Held and passed: still open, until the final interview is scheduled.
+    await as(HR, `update candidates set primary_status = 'selected' where id = $1`, [candidate]);
+    expect((await invite(primary)).open).toBe(true);
+    await as(HR, `update candidates set secondary_status = 'scheduled', secondary_date = current_date + 3 where id = $1`, [candidate]);
+    expect((await invite(primary)).open).toBe(false);
+    await expect(send(primary)).rejects.toThrow(/closed/);
+
+    // The final link works until the final decision.
+    const final = await link('secondary');
+    expect((await invite(final)).open).toBe(true);
+    await as(HR, `update candidates set secondary_status = 'selected', selection_category = 'waiting' where id = $1`, [candidate]);
+    expect((await invite(final)).open).toBe(true);
+    await as(HR, `update candidates set secondary_status = 'rejected', selection_category = null, final_decision = 'rejected', decision_date = current_date where id = $1`, [candidate]);
+    expect((await invite(final)).open).toBe(false);
+    await expect(send(final)).rejects.toThrow(/closed/);
+
+    // Undoing the step opens it again.
+    await as(ADMIN, `update candidates set final_decision = null, decision_date = null, secondary_status = 'scheduled' where id = $1`, [candidate]);
+    expect((await invite(final)).open).toBe(true);
+    await send(final);
+    expect((await invite(final)).submitted).toBe(true);
   });
 
   it('rejects made-up tokens and anonymous reads', async () => {
@@ -687,5 +728,143 @@ describe('desks and notifications', () => {
     await as(TAREQ, `insert into job_postings (requisition_id, media) values ($1, 'BDJobs')`, [requisition_id]);
     const posting = (await inbox(MILI)).find((n) => n.event === 'posting');
     expect(posting).toMatchObject({ actor_name: 'Tareq Azij', detail: 'BDJobs', designation: 'Jr. Executive', bucket_id: bucket });
+  });
+});
+
+describe('corrections approved by an admin', () => {
+  // An HR person on the process desk records the steps and asks for corrections; ADMIN approves.
+  const RAJU = '00000000-0000-4000-8000-0000000000c1';
+  let bucket: string;
+  const CONFIRMED = `screening_status = 'shortlisted', call_status = 'confirm', call_date = '2026-11-02', call_time = '10:00',
+    confirmed_date = '2026-11-02', confirmed_time = '11:00', message_status = 'message_done', primary_status = 'selected',
+    secondary_status = 'selected', selection_category = 'merit', final_decision = 'confirmed', decision_date = '2026-11-13',
+    decision_time = '16:00', joining_date = '2026-12-01', joining_time = '09:00', joining_status = 'offer_sent'`;
+
+  beforeAll(async () => {
+    await db.query(`insert into auth.users (id, email, raw_user_meta_data) values ($1, 'raju@x.com', '{"full_name": "Raju"}')`, [RAJU]);
+    await db.query(`update public.profiles set role = 'hr', desk = 'process' where id = $1`, [RAJU]);
+    bucket = await makeBucket('edit-bucket');
+  });
+
+  async function locked(name: string) {
+    const id = await addCandidate(bucket, name);
+    await db.query(`update public.candidates set ${CONFIRMED} where id = $1`, [id]);
+    return id;
+  }
+  const ask = (user: string, id: string, step: string, reason = 'Wrong day typed') =>
+    as(user, `select request_edit($1, $2, $3) as r`, [id, step, reason]).then((rows) => rows[0].r);
+
+  it('keeps joining remarks open after the lock', async () => {
+    const id = await locked('Remarks Person');
+    const [row] = await as(RAJU, `update candidates set joining_remarks = 'Joins after notice' where id = $1 returning joining_remarks`, [id]);
+    expect(row.joining_remarks).toBe('Joins after notice');
+  });
+
+  it('lets HR ask, only an admin answer, and the asker correct that one step once, even when locked', async () => {
+    const id = await locked('Correct Me');
+    await expect(as(VIEWER, `select request_edit($1, 'call', 'Wrong day')`, [id])).rejects.toThrow(/Only HR and admins/);
+    await expect(as(RAJU, `select request_edit($1, 'call', '')`, [id])).rejects.toThrow(/Say what was entered wrongly/);
+    await expect(as(RAJU, `select request_edit($1, 'screening', 'Wrong')`, [id])).rejects.toThrow(/no step called/);
+    const request = await ask(RAJU, id, 'call', 'Called on 1 Nov, not 2 Nov');
+    expect(request).toMatchObject({ status: 'pending', requested_by: RAJU, requested_by_name: 'Raju', step: 'call' });
+    await expect(ask(RAJU, id, 'call')).rejects.toThrow(/already asked/);
+
+    // The admin hears about it; HR cannot answer; nobody writes the table directly.
+    const asked = (await as(ADMIN, `select * from notifications where event = 'edit_request' and candidate_id = $1`, [id]))[0];
+    expect(asked).toMatchObject({ actor_name: 'Raju', subject: 'Correct Me' });
+    expect(asked.detail).toContain('Call: Called on 1 Nov');
+    await expect(as(HR, `select decide_edit($1, true, '')`, [request.id])).rejects.toThrow(/Only an admin/);
+    await expect(as(RAJU, `select apply_edit($1, '{"call_date": "2026-11-01"}'::jsonb)`, [request.id])).rejects.toThrow(/not approved/);
+    await expect(as(RAJU, `update edit_requests set status = 'approved' where id = $1 returning id`, [request.id])).rejects.toThrow(/permission denied/);
+    await expect(as(RAJU, `insert into edit_requests (candidate_id, step, requested_by) values ($1, 'call', $2)`, [id, RAJU])).rejects.toThrow(/permission denied/);
+
+    const [{ r: approved }] = await as(ADMIN, `select decide_edit($1, true, 'Fine, fix it') as r`, [request.id]);
+    expect(approved).toMatchObject({ status: 'approved', decided_by: ADMIN, decision_note: 'Fine, fix it' });
+    expect((await as(RAJU, `select * from notifications where event = 'edit_approved'`))[0]).toMatchObject({ subject: 'Correct Me' });
+    await expect(as(ADMIN, `select decide_edit($1, false, '')`, [request.id])).rejects.toThrow(/already answered/);
+
+    // Someone else cannot use Raju's approval, and the approval covers only the call's fields.
+    await expect(as(HR, `select apply_edit($1, '{"call_date": "2026-11-01"}'::jsonb)`, [request.id])).rejects.toThrow(/not found/);
+    await expect(as(RAJU, `select apply_edit($1, '{"decision_date": "2026-11-01"}'::jsonb)`, [request.id])).rejects.toThrow(/cannot change decision_date/);
+    await expect(as(RAJU, `select apply_edit($1, '{"call_status": "reject"}'::jsonb)`, [request.id])).rejects.toThrow(/cannot change call_status/);
+    await expect(as(RAJU, `select apply_edit($1, '{"call_date": "2026-11-02"}'::jsonb)`, [request.id])).rejects.toThrow(/Nothing was changed/);
+    // Outside apply_edit the candidate stays locked, approval or not.
+    await expect(as(RAJU, `update candidates set call_date = '2026-11-01' where id = $1`, [id])).rejects.toThrow(/locked/);
+
+    const [{ r: used }] = await as(RAJU, `select apply_edit($1, '{"call_date": "2026-11-01", "call_time": "15:30", "call_note": "Corrected"}'::jsonb) as r`, [request.id]);
+    expect(used.status).toBe('used');
+    const [row] = await as(RAJU, `select call_date::text as day, call_time, call_note, final_decision from candidates where id = $1`, [id]);
+    expect(row).toEqual({ day: '2026-11-01', call_time: '15:30', call_note: 'Corrected', final_decision: 'confirmed' });
+    const [event] = await as(RAJU, `select from_value, to_value, actor_name, actor_id from candidate_events where candidate_id = $1 and field = 'correction'`, [id]);
+    expect(event).toMatchObject({ from_value: 'call', actor_name: 'Raju', actor_id: RAJU });
+    expect(event.to_value).toContain('call_date: 2026-11-02 -> 2026-11-01');
+    expect((await as(ADMIN, `select * from notifications where event = 'edit_used' and candidate_id = $1`, [id])).length).toBe(1);
+
+    // Once used, it is spent.
+    await expect(as(RAJU, `select apply_edit($1, '{"call_date": "2026-10-31"}'::jsonb)`, [request.id])).rejects.toThrow(/already used/);
+  });
+
+  it('still checks the pipeline rules on a correction, and lets the asker withdraw', async () => {
+    const id = await locked('Rule Keeper');
+    const request = await ask(RAJU, id, 'decision');
+    await as(ADMIN, `select decide_edit($1, true, '')`, [request.id]);
+    await expect(as(RAJU, `select apply_edit($1, '{"joining_date": null}'::jsonb)`, [request.id])).rejects.toThrow(/confirmed_needs_details/);
+    const [{ r }] = await as(RAJU, `select apply_edit($1, '{"joining_date": "2026-12-05", "joining_time": "10:00"}'::jsonb) as r`, [request.id]);
+    expect(r.status).toBe('used');
+
+    const second = await ask(RAJU, id, 'primary');
+    await expect(as(HR, `select cancel_edit($1)`, [second.id])).rejects.toThrow(/Only an open request of your own/);
+    const [{ r: withdrawn }] = await as(RAJU, `select cancel_edit($1) as r`, [second.id]);
+    expect(withdrawn.status).toBe('cancelled');
+    // Withdrawn, so a new request for the same step is allowed.
+    expect((await ask(RAJU, id, 'primary')).status).toBe('pending');
+  });
+
+  it('keeps the screening desk out of corrections to process steps', async () => {
+    const SCREENER = '00000000-0000-4000-8000-0000000000c2';
+    await db.query(`insert into auth.users (id, email) values ($1, 'screen@x.com')`, [SCREENER]);
+    await db.query(`update public.profiles set role = 'hr', desk = 'screening' where id = $1`, [SCREENER]);
+    const id = await locked('Desk Check');
+    const request = await ask(SCREENER, id, 'call');
+    await as(ADMIN, `select decide_edit($1, true, '')`, [request.id]);
+    await expect(as(SCREENER, `select apply_edit($1, '{"call_note": "x"}'::jsonb)`, [request.id])).rejects.toThrow(/belongs to the process team/);
+  });
+});
+
+describe('deleting CV buckets', () => {
+  it('lets HR delete an empty bucket, and needs an admin to clear one holding CVs first', async () => {
+    const empty = await makeBucket('empty-bucket');
+    await as(HR, 'delete from cv_buckets where id = $1', [empty]);
+    expect(await as(HR, 'select id from cv_buckets where id = $1', [empty])).toEqual([]);
+
+    const full = await makeBucket('full-bucket');
+    await addCandidate(full, 'Inside');
+    await expect(as(HR, 'delete from cv_buckets where id = $1', [full])).rejects.toThrow(/foreign key/);
+    // HR's delete of the candidates removes nothing, so the bucket stays.
+    await as(HR, 'delete from candidates where bucket_id = $1', [full]);
+    expect((await as(HR, 'select id from candidates where bucket_id = $1', [full])).length).toBe(1);
+    await as(ADMIN, 'delete from candidates where bucket_id = $1', [full]);
+    await as(ADMIN, 'delete from cv_buckets where id = $1', [full]);
+    expect(await as(HR, 'select id from cv_buckets where id = $1', [full])).toEqual([]);
+    await expect(as(VIEWER, 'delete from cv_buckets where id = $1 returning id', [await makeBucket('viewer-bucket')])).resolves.toEqual([]);
+  });
+});
+
+describe('units and the vacancy sheet', () => {
+  it('stores the unit structure and syncs sheet rows by their key, once each', async () => {
+    const structure = [{ code: 'RHL', name: 'RHL', departments: [{ name: 'ESG', code: 'RHL-ESG', sections: [{ name: 'EMS', subsections: ['EMS'] }] }] }];
+    const [settings] = await as(ADMIN, `update settings set org_structure = $1::jsonb where id = 1 returning org_structure`, [JSON.stringify(structure)]);
+    expect(settings.org_structure).toEqual(structure);
+    await expect(as(HR, `update settings set org_structure = '[]' where id = 1 returning id`)).resolves.toEqual([]);
+
+    const upsert = (status: string) => as(HR, `
+      insert into requisitions (sheet_key, ref_no, unit, designation, department, section, vacancy_type, status, requisition_date, sheet_data)
+      values ('vacancy-sheet:1', 'VAC-001', 'TAL', 'Incharge', 'Production', 'Finishing', 'Replacement', $1, '2026-07-07', '{"cv_received": "FO"}')
+      on conflict (sheet_key) do update set status = excluded.status
+      returning id, status, unit, section`, [status]);
+    const [first] = await upsert('In progress');
+    const [again] = await upsert('Filled');
+    expect(again).toMatchObject({ id: first.id, status: 'Filled', unit: 'TAL', section: 'Finishing' });
+    expect((await as(HR, `select count(*)::int as n from requisitions where sheet_key = 'vacancy-sheet:1'`))[0].n).toBe(1);
   });
 });

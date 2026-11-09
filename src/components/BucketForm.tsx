@@ -4,6 +4,7 @@ import { DEFAULT_COLORS } from '../lib/defaults';
 import { classNames } from '../lib/format';
 import { useStore } from '../lib/store';
 import type { CvBucket, Requisition } from '../types';
+import { OrgFields } from './OrgFields';
 import { Button, Dialog, errorText, Select, TextArea, TextInput, useToast } from './ui';
 
 export const FOLDER_COLORS: Record<string, { tab: string; body: string; icon: string }> = {
@@ -30,8 +31,12 @@ export function BucketFormDialog({ onClose, bucket, fromRequisition, defaultDepa
   const [form, setForm] = useState({
     requisition_id: bucket?.requisition_id ?? fromRequisition?.id ?? '',
     designation: bucket?.designation ?? fromRequisition?.designation ?? '',
+    unit: bucket?.unit ?? fromRequisition?.unit ?? '',
     department: bucket?.department ?? fromRequisition?.department ?? defaultDepartment ?? '',
-    company: bucket?.company ?? fromRequisition?.company ?? settings.default_company,
+    section: bucket?.section ?? fromRequisition?.section ?? '',
+    subsection: bucket?.subsection ?? fromRequisition?.subsection ?? '',
+    // A requisition synced from the vacancy sheet has no company of its own: the default company is used.
+    company: bucket ? bucket.company : fromRequisition?.company || settings.default_company,
     color: bucket?.color ?? 'green',
     status: bucket?.status ?? 'Open',
     accepting_applications: bucket?.accepting_applications ?? true,
@@ -44,7 +49,16 @@ export function BucketFormDialog({ onClose, bucket, fromRequisition, defaultDepa
     const requisition = requisitions.find((r) => r.id === id);
     set({
       requisition_id: id,
-      ...(requisition ? { designation: requisition.designation, department: requisition.department, company: requisition.company } : {}),
+      ...(requisition
+        ? {
+            designation: requisition.designation,
+            unit: requisition.unit ?? '',
+            department: requisition.department,
+            section: requisition.section ?? '',
+            subsection: requisition.subsection ?? '',
+            company: requisition.company || settings.default_company,
+          }
+        : {}),
     });
   }
 
@@ -80,11 +94,10 @@ export function BucketFormDialog({ onClose, bucket, fromRequisition, defaultDepa
             {requisitions.map((r) => <option key={r.id} value={r.id}>{r.ref_no} · {r.designation}</option>)}
           </Select>
         </div>
-        <TextInput label="Designation" required autoFocus value={form.designation} onChange={(e) => set({ designation: e.target.value })} />
-        <Select label="Department" value={form.department} onChange={(e) => set({ department: e.target.value })}>
-          <option value="">Choose…</option>
-          {[...new Set([...settings.departments, form.department].filter(Boolean))].map((d) => <option key={d}>{d}</option>)}
-        </Select>
+        <div className="sm:col-span-2">
+          <TextInput label="Designation" required autoFocus value={form.designation} onChange={(e) => set({ designation: e.target.value })} />
+        </div>
+        <OrgFields value={form} onChange={(place) => set(place)} />
         <div className="sm:col-span-2">
           <TextInput label="Company" value={form.company} list="company-options" onChange={(e) => set({ company: e.target.value })} hint="Printed on the offer letter and joining documents." />
           <datalist id="company-options">{settings.companies.map((c) => <option key={c} value={c} />)}</datalist>

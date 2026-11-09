@@ -35,7 +35,11 @@ export type NotificationEvent =
   | 'decision_rejected'
   | 'joining_accepted'
   | 'joined'
-  | 'joining_declined';
+  | 'joining_declined'
+  | 'edit_request'
+  | 'edit_approved'
+  | 'edit_rejected'
+  | 'edit_used';
 
 /** One update for one person. Written by the database, never by the app, so no step can skip it. */
 export interface AppNotification {
@@ -81,7 +85,29 @@ export interface Settings {
   upload_batch_size: number;
   /** Seconds of break between two batches. */
   upload_batch_pause: number;
+  /** The units, each with its departments, sections and subsections. */
+  org_structure: OrgUnit[];
   updated_at?: string;
+}
+
+export interface OrgSection {
+  name: string;
+  subsections: string[];
+}
+
+export interface OrgDepartment {
+  name: string;
+  /** Short code, e.g. RHL-ESG. */
+  code: string;
+  sections: OrgSection[];
+}
+
+/** One unit of the group, e.g. RHL. */
+export interface OrgUnit {
+  code: string;
+  /** The full name, when known. */
+  name: string;
+  departments: OrgDepartment[];
 }
 
 export interface MessageTemplate {
@@ -136,6 +162,25 @@ export interface Requisition {
   job_description: string;
   created_at: string;
   filled_at: string | null;
+  /** Unit code, e.g. TAL. */
+  unit: string;
+  section: string;
+  subsection: string;
+  /** New, Replacement, or New & Replacement. */
+  vacancy_type: string;
+  /** For a replacement: who left, with their ID, as written. */
+  replacing: string;
+  requisition_date: string | null;
+  approved_on: string | null;
+  offer_date: string | null;
+  expected_joining: string | null;
+  /** Who was selected, as written in the vacancy sheet. Candidates handled in the app show on their own. */
+  selected_names: string;
+  remarks: string;
+  /** Set for a row synced from the vacancy sheet: its SL. */
+  sheet_key: string | null;
+  /** The sheet's own figures for this row: CVs received, shortlisted, interview dates and so on. */
+  sheet_data: Record<string, string | number | boolean | null>;
 }
 
 export interface JobPosting {
@@ -163,6 +208,9 @@ export interface CvBucket {
   accepting_applications: boolean;
   description: string;
   created_at: string;
+  unit: string;
+  section: string;
+  subsection: string;
 }
 
 export interface EducationItem {
@@ -333,6 +381,8 @@ export interface Candidate extends CandidateProfileFields {
   /** The joining day and time the candidate confirmed on that call. Can differ from the offered one. */
   joining_confirmed_date: string | null;
   joining_confirmed_time: string;
+  /** What HR noted on the joining call. */
+  joining_remarks: string;
   offered_salary: number | null;
   employee_code: string;
   probation_period: string;
@@ -354,6 +404,27 @@ export interface CandidateEvent {
   actor_name: string;
   /** The account that did it. Empty for the company form and for records made before it was kept. */
   actor_id: string | null;
+  created_at: string;
+}
+
+/** A step that can be corrected after an admin approves. */
+export type EditStep = 'call' | 'primary_schedule' | 'primary' | 'final_schedule' | 'final' | 'decision';
+export type EditRequestStatus = 'pending' | 'approved' | 'rejected' | 'used' | 'cancelled';
+
+/** HR asks to correct one recorded step; an admin approves or turns it down; then HR corrects it once. */
+export interface EditRequest {
+  id: string;
+  candidate_id: string;
+  step: EditStep;
+  reason: string;
+  status: EditRequestStatus;
+  requested_by: string;
+  requested_by_name: string;
+  decided_by: string | null;
+  decided_by_name: string;
+  decided_at: string | null;
+  decision_note: string;
+  used_at: string | null;
   created_at: string;
 }
 
@@ -438,4 +509,6 @@ export interface ReviewInvite {
   group_name: string;
   stage: 'primary' | 'secondary';
   submitted: boolean;
+  /** False once the candidate has moved past this interview. Missing from databases set up before it existed. */
+  open?: boolean;
 }

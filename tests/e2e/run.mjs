@@ -172,7 +172,6 @@ async function main() {
   await page.setViewportSize({ width: 1440, height: 950 });
   await page.goto(BASE);
   await heading('Dashboard').waitFor();
-  check('Waiting candidates do not fill a vacancy', await page.getByRole('group', { name: '1 of 2 vacancies filled' }).count() === 1);
   await shot('01a-dashboard-stars', { fullPage: true });
 
   // --- Sidebar
@@ -204,17 +203,17 @@ async function main() {
   check('Sidebar closes after choosing a page by keyboard', (await navWidth()) === 64, `${await navWidth()}px`);
 
   // --- Dashboard cards
-  const tile = (name) => page.getByRole('link', { name: new RegExp(`^${name}`) });
+  const tile = (name) => page.getByRole('button', { name: new RegExp(`^${name}`) });
   const tips = [
-    ['Open vacancies', ['Positions still to fill', 'Quality Inspector', '3 of 3', 'REQ-'], '/requisitions'],
-    ['CVs received', ['By department', 'CVs', 'Interviews', 'HR & Admin', 'Total', 'Where they stand', 'New CV', 'Rejected', 'By position', 'Jr. Executive'], '/buckets'],
-    ['Interviews, next 7 days', ['By department', 'Final', 'Next 7 days', 'HR & Admin', 'Scheduled', 'Mehedi Hasan', 'Primary'], '/buckets'],
-    ['Avg. CV review time', ['Longest CV reviews', 'Mahmud'], '/buckets'],
-    ['Merit and waiting', ['Offer letters by department', 'Sent', 'Accepted', 'Rejected', 'Merit list: 2', 'Rahim Uddin', 'Letter not sent', 'Mahmud Karim', 'Joins', 'Waiting list: 1', 'Liton Das', 'Waiting for a place'], '/selected'],
-    ['Avg. time to hire', ['Days from CV to final selection', 'Rahim Uddin'], '/selected'],
-    ['Candidate rating', ['From 2 of 3', 'Communication', 'Waiting for a reply'], '/reviews'],
+    ['Open requisitions', ['By status', 'Positions still to fill', 'Quality Inspector', '3 of 3', 'REQ-'], /^Open requisitions: \d+$/, ['By unit', 'By status', 'Days open', 'Quality Inspector']],
+    ['CVs received', ['By department', 'CVs', 'Interviews', 'HR & Admin', 'Total', 'Where they stand', 'New CV', 'Rejected', 'By position', 'Jr. Executive'], /^CVs received: 23$/, ['By department', 'Where they stand', 'By source', 'BDJobs']],
+    ['Interviews, next 7 days', ['By department', 'Final', 'Next 7 days', 'HR & Admin', 'Scheduled', 'Mehedi Hasan', 'Primary'], 'Interview calendar', ['Mehedi Hasan', 'Result not recorded', 'Primary held']],
+    ['Avg. CV review time', ['Longest CV reviews', 'Mahmud'], 'CV review time', ['How long each review took', 'Mahmud Karim', 'Sittings']],
+    ['Merit and waiting', ['Offer letters by department', 'Sent', 'Accepted', 'Rejected', 'Merit list: 2', 'Rahim Uddin', 'Letter not sent', 'Mahmud Karim', 'Joins', 'Waiting list: 1', 'Liton Das', 'Waiting for a place'], 'Merit and waiting lists', ['Merit list', 'Waiting list', 'Rahim Uddin', 'Liton Das', 'Remarks']],
+    ['Avg. time to hire', ['Days from CV to final selection', 'Rahim Uddin'], 'Time to hire', ['Each person', 'Average by position', 'Rahim Uddin']],
+    ['Candidate rating', ['From 2 of 3', 'Communication', 'Waiting for a reply'], 'Candidate rating', ['Average out of 5', 'Professionalism', 'Latest feedback']],
   ];
-  for (const [name, expected, path] of tips) {
+  for (const [name, expected, dialogName, inDialog] of tips) {
     await tile(name).hover();
     const tooltip = page.getByRole('tooltip').filter({ visible: true });
     await tooltip.waitFor();
@@ -223,19 +222,52 @@ async function main() {
     const box = await tooltip.boundingBox();
     const fits = box.x >= 64 && box.x + box.width <= 1440;
     check(`Card tooltip fits the screen: ${name}`, fits, `x ${Math.round(box.x)} to ${Math.round(box.x + box.width)}`);
-    if (name === 'Open vacancies') await shot('01c-tooltip-vacancies');
+    if (name === 'Open requisitions') await shot('01c-tooltip-vacancies');
     if (name === 'Candidate rating') await shot('01d-tooltip-rating');
     if (name === 'CVs received') await shot('01e-tooltip-cvs-by-department');
     if (name === 'Interviews, next 7 days') await shot('01f-tooltip-interviews-by-department');
     if (name === 'Merit and waiting') await shot('01g-tooltip-letters-by-department');
+    // A click opens the details over the dashboard; it no longer goes to another page.
     await tile(name).click();
-    await page.waitForURL(`**${path}`);
-    check(`Card opens its page: ${name}`, true);
-    await page.goBack();
-    await heading('Dashboard').waitFor();
+    const details = page.getByRole('dialog', { name: dialogName });
+    await details.waitFor();
+    // Section titles are shown in capitals, so compare without case.
+    const detailText = await details.innerText();
+    const hasText = (part) => detailText.toLowerCase().includes(part.toLowerCase());
+    check(`Card opens its details in a window: ${name}`, page.url().replace(/\/$/, '') === BASE && inDialog.every(hasText), inDialog.filter((part) => !hasText(part)).join(', ') || page.url());
+    check(`The card's tooltip closes when its window opens: ${name}`, (await page.getByRole('tooltip').filter({ visible: true }).count()) === 0);
+    if (name === 'Open requisitions') {
+      await shot('01i-details-requisitions');
+      await details.getByRole('group', { name: '1 of 2 vacancies filled', exact: true }).hover();
+      const fill = await page.getByRole('tooltip').filter({ visible: true }).innerText();
+      check('Each requisition shows how far it is filled; waiting candidates do not fill a vacancy', fill.includes('1 of 2 filled') && fill.includes('Rahim Uddin') && fill.includes('On the waiting list'), fill.replace(/\s+/g, ' '));
+      await details.getByRole('row', { name: /Details of .*Quality Inspector/ }).click();
+      const reqDetails = page.getByRole('dialog', { name: /Quality Inspector/ });
+      await reqDetails.waitFor();
+      check('A requisition row opens its details', true);
+      await reqDetails.getByRole('button', { name: 'Close', exact: true }).click();
+      await reqDetails.waitFor({ state: 'detached' });
+    }
+    if (name === 'Interviews, next 7 days') {
+      const todayCell = details.getByRole('gridcell', { selected: true });
+      check('The calendar opens on the next interview day', /: 1 interview$/.test(await todayCell.getAttribute('aria-label')) && detailText.includes('Today,'), await todayCell.getAttribute('aria-label'));
+      check('Interview days are marked on the calendar', (await details.getByRole('gridcell', { name: /: \d+ interviews?$/ }).count()) >= 4);
+      await shot('01j-details-interview-calendar');
+      await details.getByRole('region', { name: /Interviews on/ }).getByRole('button', { name: /^Tomorrow|^\w{3}, / }).first().click();
+      const dayPanel = await details.getByRole('region', { name: /Interviews on/ }).innerText();
+      check('Choosing a day lists its interviews', dayPanel.includes('Sadia Islam') && dayPanel.includes('Final'), dayPanel.replace(/\s+/g, ' ').slice(0, 120));
+    }
+    if (name === 'Merit and waiting') await shot('01k-details-merit-waiting');
+    await details.getByRole('button', { name: 'Close', exact: true }).last().click();
+    await details.waitFor({ state: 'detached' });
     await page.mouse.move(900, 700);
     await page.waitForTimeout(100);
   }
+  await page.getByRole('button', { name: 'Calendar', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Interview calendar' }).waitFor();
+  check('Upcoming interviews opens the same calendar', true);
+  await page.getByRole('dialog', { name: 'Interview calendar' }).getByRole('button', { name: 'Close', exact: true }).last().click();
+  check('The long list of open requisitions is gone from the dashboard', (await page.getByRole('heading', { name: 'Open requisitions', exact: true }).count()) === 0);
   const meritTile = await tile('Merit and waiting').innerText();
   check('Dashboard card counts both lists', /2\s*Merit/.test(meritTile) && /1\s*Waiting/.test(meritTile) && meritTile.includes('1 letter to send'), meritTile.replace(/\s+/g, ' '));
 
@@ -246,7 +278,6 @@ async function main() {
     ['CVs received: 23', ['CVs received: 23', 'In process', 'Rejected', 'By position', 'Jr. Executive']],
     ['Joined: 0', ['Joined: 0', 'Out of Confirmed', '0 of 1']],
     ['BDJobs: 12 CVs, 2 selected', ['BDJobs: 12 CVs', 'Share of all CVs', 'Shortlisted', 'Final selected', 'Rejected', 'In process', 'By position']],
-    ['1 of 2 vacancies filled', ['1 of 2 filled', 'Rahim Uddin', 'Still to fill', 'On the waiting list']],
   ];
   for (const [name, expected] of bars) {
     await page.getByRole('group', { name, exact: true }).hover();
@@ -257,7 +288,6 @@ async function main() {
     check(`Bar tooltip on screen: ${name}`, box.x >= 64 && box.x + box.width <= 1440 && box.y >= 0 && box.y + box.height <= 950, `${Math.round(box.x)},${Math.round(box.y)} ${Math.round(box.width)}x${Math.round(box.height)}`);
     if (name.startsWith('Shortlisted')) await shot('01e-tooltip-funnel');
     if (name.startsWith('BDJobs')) await shot('01f-tooltip-source');
-    if (name.startsWith('1 of 2')) await shot('01h-tooltip-fill');
     await page.mouse.move(900, 40);
     await page.waitForTimeout(80);
   }
@@ -307,7 +337,7 @@ async function main() {
   await page.mouse.move(900, 40);
   await page.waitForTimeout(120);
 
-  await tile('Open vacancies').hover();
+  await tile('Open requisitions').hover();
   const vacancyTip = page.getByRole('tooltip').filter({ visible: true });
   await vacancyTip.waitFor();
   const tipBox = await vacancyTip.boundingBox();
@@ -318,7 +348,7 @@ async function main() {
   check('Esc closes the tooltip', (await page.getByRole('tooltip').filter({ visible: true }).count()) === 0);
   // Somewhere with no tooltip of its own, so only the focused one opens.
   await page.mouse.move(600, 140);
-  await tile('Open vacancies').focus();
+  await tile('Open requisitions').focus();
   await page.keyboard.press('Tab');
   await page.getByRole('tooltip').filter({ visible: true }).waitFor();
   check('Tooltip opens on keyboard focus', (await page.getByRole('tooltip').filter({ visible: true }).innerText()).includes('Where they stand'));
@@ -710,10 +740,12 @@ async function main() {
   await page.waitForTimeout(200);
   check('Final selection needs Merit or Waiting', await final.isVisible());
   await final.getByLabel('Selection list').selectOption('merit');
+  await final.getByLabel('Remarks (optional)').fill('Best answers on HR software; can join early.');
   await shot('08c-final-panel');
   await final.getByRole('button', { name: 'Save as selected' }).click();
   await final.waitFor({ state: 'detached' });
   await stage('Final selected');
+  check('Merit remarks show on the card', (await card.innerText()).includes('Remarks: Best answers on HR software; can join early.'));
   check('Recommendations from both rounds add up to stars', await card.getByRole('img', { name: 'Recommended by 3 of 4 interviewers' }).count() === 1);
   check('The bar now asks for the final decision', (await currentStep()).includes('Final decision'), await currentStep());
   await shot('08d-card-final-decision');
@@ -970,14 +1002,31 @@ async function main() {
   await applicant.getByRole('heading', { name: 'Application received' }).waitFor();
   check('Application submitted without an account', true);
 
+  // Rupa has moved past her primary interview since that link was made, so it no longer takes answers.
   await applicant.goto(reviewLink);
-  await applicant.getByRole('heading', { name: /How was your interview, Rupa/ }).waitFor();
+  await applicant.getByRole('heading', { name: 'This feedback link has closed' }).waitFor();
+  check('A feedback link closes once the candidate moves on', await applicant.getByRole('button', { name: 'Send feedback' }).count() === 0);
+
+  // Tanvir's primary interview is still to come: his link can be shared now, before the interview.
+  await page.goto(`${BASE}/?candidate=cand-3`);
+  const tanvir = page.getByRole('dialog', { name: 'Tanvir Ahmed' });
+  await tanvir.getByRole('button', { name: 'Ask for feedback', exact: true }).click();
+  const tanvirReview = page.getByRole('dialog', { name: /Ask Tanvir Ahmed for feedback/ });
+  const openLinkField = tanvirReview.getByLabel('Private link');
+  await page.waitForFunction(() => [...document.querySelectorAll('input')].some((i) => i.readOnly && i.value.includes('/review/')));
+  const openLink = await openLinkField.inputValue();
+  check('A feedback link can be shared before the interview', /\/review\/[0-9a-f-]{36}$/.test(openLink) && (await tanvirReview.innerText()).includes('until the final interview is scheduled'), openLink);
+  await tanvirReview.getByRole('button', { name: 'Close', exact: true }).click();
+  await tanvir.getByRole('button', { name: 'Close', exact: true }).click();
+
+  await applicant.goto(openLink);
+  await applicant.getByRole('heading', { name: /How was your interview, Tanvir/ }).waitFor();
   await applicant.locator('fieldset', { hasText: 'Overall experience' }).locator('label').nth(3).click();
   await applicant.getByLabel('Share your experience').fill('Very professional.');
   await applicant.screenshot({ path: join(shots, '12-review-form.png'), fullPage: true });
   await applicant.getByRole('button', { name: 'Send feedback' }).click();
   await applicant.getByRole('heading', { name: 'Thank you for your feedback' }).waitFor();
-  await applicant.goto(reviewLink);
+  await applicant.goto(openLink);
   await applicant.getByRole('heading', { name: 'Thank you for your feedback' }).waitFor();
   check('Review link works once only', await applicant.getByRole('button', { name: 'Send feedback' }).count() === 0);
   await applicant.close();

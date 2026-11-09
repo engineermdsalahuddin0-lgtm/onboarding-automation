@@ -9,10 +9,15 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Avatar, Card, EmptyState, HoverTooltip, InsightTile, PageHeader, RecommendationStars, Select, TooltipList, TooltipTable, type TooltipRow, type TooltipTableRow } from '../components/ui';
-import { classNames, dateMedium, dateTime, dayMonth, daysBetween, duration, isoDate, time12, todayIso, whenText } from '../lib/format';
-import { afterFinal, bucketStats, fillsVacancy, isActive, isRejected, JOINING, joiningWhen, matchesStageFilter, nextAction, recommendationCount, stageOf, type StageFilter } from '../lib/pipeline';
+import { Link, useNavigate } from 'react-router-dom';
+import { Avatar, Button, Card, EmptyState, HoverTooltip, InsightTile, PageHeader, RecommendationStars, Select, StatusBadge, TooltipList, TooltipTable, type TooltipRow, type TooltipTableRow } from '../components/ui';
+import { BarList, CountTable, DataTable, DetailDialog, Figures, InterviewCalendar, Section, type InterviewEvent } from '../components/DashboardDetails';
+import { classNames, dateTime, dayMonth, daysBetween, duration, isoDate, time12, todayIso, whenText } from '../lib/format';
+import { placeText } from '../lib/org';
+import { afterFinal, bucketStats, CATEGORY_LABELS, fillsVacancy, isActive, isRejected, JOINING, joiningWhen, matchesStageFilter, nextAction, recommendationCount, stageOf, type StageFilter } from '../lib/pipeline';
+import { byNewest, daysOpen, isOpenRequisition, requisitionFigures } from '../lib/requisitions';
+import { CorrectionRequestsCard } from '../components/Corrections';
+import { RequisitionDetails, STATUS_TONE } from './Requisitions';
 import { HelpTip, WelcomeGuide } from '../components/Guide';
 import { WorkingNow } from '../components/WorkingNow';
 import { useFileUrls, useStore } from '../lib/store';
@@ -227,27 +232,32 @@ function Inflow({ items, positionOf }: { items: Candidate[]; positionOf: NameOf 
   );
 }
 
-function FillMeter({ vacancies, people }: { vacancies: number; people: Candidate[] }) {
+function FillMeter({ vacancies, people, filled }: { vacancies: number; people: Candidate[]; filled: number }) {
   const selected = people.filter((c) => c.secondary_status === 'selected');
   const filling = selected.filter(fillsVacancy);
+  // Named as selected on the vacancy sheet, without a candidate in the app.
+  const fromSheet = Math.max(0, filled - filling.length);
   const waiting = selected.filter((c) => c.selection_category === 'waiting' && c.joining_status !== 'declined');
   const notConfirmed = selected.filter((c) => c.selection_category === 'merit' && c.joining_status === 'declined');
   return (
     <HoverTooltip
       side="above"
-      label={`${filling.length} of ${vacancies} vacancies filled`}
+      label={`${filled} of ${vacancies} vacancies filled`}
       className="inline-flex items-center gap-2 rounded px-1 py-1 transition-colors hover:bg-hover"
       details={
         <>
           <TooltipList
-            title={`${filling.length} of ${vacancies} filled`}
+            title={`${filled} of ${vacancies} filled`}
             empty="No one on the merit list yet."
-            rows={filling.map((c) => ({ label: c.full_name, value: JOINING[c.joining_status].label }))}
+            rows={[
+              ...filling.map((c) => ({ label: c.full_name, value: JOINING[c.joining_status].label })),
+              ...(fromSheet ? [{ label: 'Named on the vacancy sheet', value: fromSheet }] : []),
+            ]}
           />
           <TooltipList
             title="Still to fill"
             rows={[
-              { label: 'Vacancies left', value: Math.max(0, vacancies - filling.length) },
+              { label: 'Vacancies left', value: Math.max(0, vacancies - filled) },
               { label: 'On the waiting list', value: waiting.length },
               { label: 'Did not confirm', value: notConfirmed.length },
               { label: 'CVs still in process', value: people.filter(isActive).length },
@@ -257,9 +267,9 @@ function FillMeter({ vacancies, people }: { vacancies: number; people: Candidate
       }
     >
       <span className="h-1.5 w-20 overflow-hidden rounded-full bg-hover" aria-hidden>
-        <span className="block h-full rounded-full bg-brand-600" style={{ width: `${Math.min(100, (filling.length / vacancies) * 100)}%` }} />
+        <span className="block h-full rounded-full bg-brand-600" style={{ width: `${Math.min(100, (filled / vacancies) * 100)}%` }} />
       </span>
-      <span className="tabular text-xs">{filling.length}/{vacancies}</span>
+      <span className="tabular text-xs">{filled}/{vacancies}</span>
     </HoverTooltip>
   );
 }
@@ -469,9 +479,23 @@ export function DashboardPage() {
     return inDepartment.filter((c) => new Date(c.received_at) >= cutoff);
   }, [inDepartment, period]);
 
-  const activeRequisitions = requisitions.filter(
-    (r) => ['Approved', 'In progress', 'Pending approval'].includes(r.status) && (!department || r.department === department),
+  // The same rule as "Still open" on the Requisitions page, so the two always show the same number.
+  const openRequisitions = useMemo(
+    () => requisitionFigures(
+      requisitions.filter((r) => isOpenRequisition(r) && (!department || r.department === department)).sort(byNewest),
+      buckets,
+      candidates,
+    ),
+    [requisitions, buckets, candidates, department],
   );
+  const [detail, setDetail] = useState<null | 'requisitions' | 'cvs' | 'interviews' | 'review' | 'selected' | 'hire' | 'rating'>(null);
+  const [requisitionShown, setRequisitionShown] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const closeDetail = () => setDetail(null);
+  const openCandidate = (c: Candidate) => {
+    setDetail(null);
+    navigate({ search: `?candidate=${c.id}` });
+  };
 
   const today = todayIso();
   const in7 = new Date();
@@ -496,16 +520,38 @@ export function DashboardPage() {
   const submitted = reviews.filter((r) => r.submitted_at && r.overall && scopedIds.has(r.candidate_id));
   const avgReview = submitted.length ? submitted.reduce((sum, r) => sum + (r.overall ?? 0), 0) / submitted.length : null;
 
-  const vacancies = activeRequisitions
-    .map((r) => {
-      const filled = buckets
-        .filter((b) => b.requisition_id === r.id)
-        .reduce((count, b) => count + candidates.filter((c) => c.bucket_id === b.id && fillsVacancy(c)).length, 0);
-      return { r, left: Math.max(0, r.vacancies - filled) };
-    })
-    .filter(({ left }) => left > 0)
-    .sort((a, b) => b.left - a.left);
+  const vacancies = openRequisitions.filter(({ left }) => left > 0).sort((a, b) => b.left - a.left);
   const openVacancies = vacancies.reduce((sum, { left }) => sum + left, 0);
+  const requisitionPlace = (r: (typeof openRequisitions)[number]['r']) => r.unit || r.department || 'No unit';
+  const countRows = (labels: string[]) => {
+    const counts = new Map<string, number>();
+    for (const label of labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+    return [...counts.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
+  };
+
+  // Every interview with a day, for the calendar: still to come, overdue, or held with its result.
+  const interviewEvents = useMemo(() => {
+    const list: InterviewEvent[] = [];
+    const add = (c: Candidate, round: 'Primary' | 'Final', date: string | null, time: string, status: string, score: number | null) => {
+      if (!date || status === 'pending') return;
+      const held = status === 'selected' || status === 'rejected';
+      list.push({
+        key: `${c.id}-${round}`,
+        candidate: c,
+        date,
+        time,
+        round,
+        state: held ? 'held' : date < today ? 'overdue' : 'scheduled',
+        result: held ? `${status === 'selected' ? 'Selected' : 'Rejected'}${score !== null ? ` · ${score}/10` : ''}` : date < today ? 'Result not recorded yet' : 'Scheduled',
+        position: bucketById.get(c.bucket_id)?.designation ?? '',
+      });
+    };
+    for (const c of inDepartment) {
+      add(c, 'Primary', c.primary_date, c.primary_time, c.primary_status, c.primary_score);
+      add(c, 'Final', c.secondary_date, c.secondary_time, c.secondary_status, c.secondary_score);
+    }
+    return list;
+  }, [inDepartment, bucketById, today]);
 
   const meritList = selected.filter((c) => c.selection_category === 'merit');
   const waitingList = selected.filter((c) => c.selection_category === 'waiting');
@@ -599,7 +645,7 @@ export function DashboardPage() {
         title="Dashboard"
         titleActions={
           <HelpTip label="How to use the dashboard">
-            The tiles show how hiring is going: point at one for details, click it to open its page. To do lists your next steps; click a line to
+            The tiles show how hiring is going: point at one for a quick look, click it for the full details with charts and tables. To do lists your next steps; click a line to
             open it. Use Period and Department on the right to narrow everything. The ? at the top right gives a full tour.
           </HelpTip>
         }
@@ -624,31 +670,35 @@ export function DashboardPage() {
         }
       />
 
+      <CorrectionRequestsCard />
+
       <div data-tour="dash-tiles" className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
         <InsightTile
-          label="Open vacancies"
-          value={openVacancies}
-          hint={`${activeRequisitions.length} requisition${activeRequisitions.length === 1 ? '' : 's'}`}
-          to="/requisitions"
-          linkLabel="Requisitions"
+          label="Open requisitions"
+          value={openRequisitions.length}
+          hint={`${openVacancies} vacanc${openVacancies === 1 ? 'y' : 'ies'} to fill`}
+          onOpen={() => setDetail('requisitions')}
           details={
-            <TooltipList
-              title="Positions still to fill"
-              empty="No open vacancies."
-              rows={vacancies.map(({ r, left }) => ({
-                label: r.designation,
-                note: `${r.ref_no} · ${r.status}`,
-                value: `${left} of ${r.vacancies}`,
-              }))}
-            />
+            <>
+              <TooltipList title="By status" empty="No open requisitions." rows={countRows(openRequisitions.map(({ r }) => r.status))} />
+              <TooltipList
+                title="Positions still to fill"
+                empty="No open vacancies."
+                rows={vacancies.map(({ r, left }) => ({
+                  label: r.designation,
+                  note: `${r.ref_no} · ${r.status}`,
+                  value: `${left} of ${r.vacancies}`,
+                }))}
+                limit={4}
+              />
+            </>
           }
         />
         <InsightTile
           label="CVs received"
           value={scoped.length}
           hint={`${scoped.filter(isActive).length} in process`}
-          to="/buckets"
-          linkLabel="CV Buckets"
+          onOpen={() => setDetail('cvs')}
           details={
             <>
               <TooltipTable
@@ -666,8 +716,8 @@ export function DashboardPage() {
         <InsightTile
           label="Interviews, next 7 days"
           value={upcoming.length}
-          to="/buckets"
-          linkLabel="CV Buckets"
+          hint="Click for the calendar"
+          onOpen={() => setDetail('interviews')}
           details={
             <>
               <TooltipTable
@@ -693,8 +743,7 @@ export function DashboardPage() {
           label="Avg. CV review time"
           value={reviewCount ? duration(reviewSeconds / reviewCount) : '-'}
           hint={`${reviewCount} CV${reviewCount === 1 ? '' : 's'} reviewed`}
-          to="/buckets"
-          linkLabel="CV Buckets"
+          onOpen={() => setDetail('review')}
           details={
             <TooltipList
               title="Longest CV reviews"
@@ -718,8 +767,7 @@ export function DashboardPage() {
             </span>
           }
           hint={offersToSend > 0 ? `${offersToSend} letter${offersToSend === 1 ? '' : 's'} to send` : undefined}
-          to="/selected"
-          linkLabel="Selected Candidates"
+          onOpen={() => setDetail('selected')}
           details={
             <>
               <TooltipTable
@@ -746,8 +794,7 @@ export function DashboardPage() {
           label="Avg. time to hire"
           value={avgHire === null ? '-' : `${avgHire} day${avgHire === 1 ? '' : 's'}`}
           hint="CV received to final selection"
-          to="/selected"
-          linkLabel="Selected Candidates"
+          onOpen={() => setDetail('hire')}
           details={
             <TooltipList
               title="Days from CV to final selection"
@@ -764,8 +811,7 @@ export function DashboardPage() {
           label="Candidate rating"
           value={avgReview === null ? '-' : `${avgReview.toFixed(1)} / 5`}
           hint={`${submitted.length} review${submitted.length === 1 ? '' : 's'}`}
-          to="/reviews"
-          linkLabel="Candidate Reviews"
+          onOpen={() => setDetail('rating')}
           details={
             <TooltipList
               title={`From ${submitted.length} of ${scopedReviews.length} candidates asked`}
@@ -823,7 +869,10 @@ export function DashboardPage() {
         <Card title="Hiring funnel"><Funnel items={scoped} positionOf={designationOf} /></Card>
         <Card title="Where CVs come from"><Sources items={scoped} positionOf={designationOf} /></Card>
 
-        <Card title="Upcoming interviews">
+        <Card
+          title="Upcoming interviews"
+          action={<Button size="sm" variant="ghost" icon={Calendar} onClick={() => setDetail('interviews')}>Calendar</Button>}
+        >
           {interviews.length === 0 ? (
             <p className="py-6 text-center text-sm text-ink-muted">No interviews scheduled.</p>
           ) : (
@@ -874,50 +923,6 @@ export function DashboardPage() {
         )}
       </Card>
 
-      <Card title="Open requisitions" className="mt-4" action={<Link to="/requisitions" className="text-xs underline">All requisitions</Link>}>
-        {activeRequisitions.length === 0 ? (
-          <p className="py-6 text-center text-sm text-ink-muted">No open requisitions.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-ink-muted">
-                  <th scope="col" className="py-1.5 pr-3 font-medium">Position</th>
-                  <th scope="col" className="py-1.5 pr-3 font-medium">Status</th>
-                  <th scope="col" className="py-1.5 pr-3 font-medium">Filled</th>
-                  <th scope="col" className="py-1.5 pr-3 text-right font-medium">CVs</th>
-                  <th scope="col" className="py-1.5 pr-3 text-right font-medium">Open for</th>
-                  <th scope="col" className="py-1.5 font-medium">Target date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activeRequisitions.map((r) => {
-                  const linked = buckets.filter((b) => b.requisition_id === r.id);
-                  const ids = new Set(linked.map((b) => b.id));
-                  const cvs = candidates.filter((c) => ids.has(c.bucket_id));
-                  const late = r.target_date !== null && r.target_date < today;
-                  return (
-                    <tr key={r.id} className="border-t border-line">
-                      <td className="py-2 pr-3">
-                        {linked[0] ? <Link to={`/buckets/${linked[0].id}`} className="font-medium hover:underline">{r.designation}</Link> : <span className="font-medium">{r.designation}</span>}
-                        <span className="block text-xs text-ink-muted">{r.ref_no} · {r.department}</span>
-                      </td>
-                      <td className="py-2 pr-3 text-xs">{r.status}</td>
-                      <td className="py-2 pr-3">
-                        <FillMeter vacancies={r.vacancies} people={cvs} />
-                      </td>
-                      <td className="tabular py-2 pr-3 text-right">{cvs.length}</td>
-                      <td className="tabular py-2 pr-3 text-right">{daysBetween(r.created_at, new Date())} d</td>
-                      <td className={classNames('tabular py-2 text-xs', late && 'font-medium text-red-800')}>{dateMedium(r.target_date) || '-'}{late && ' (late)'}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
-
       {recentBuckets.length > 0 && (
         <section className="mt-5">
           <div className="mb-2 flex items-center justify-between">
@@ -930,6 +935,223 @@ export function DashboardPage() {
             ))}
           </div>
         </section>
+      )}
+
+      {detail === 'requisitions' && (
+        <DetailDialog
+          title={`Open requisitions: ${openRequisitions.length}`}
+          description={`Everything not filled or cancelled${department ? ` in ${department}` : ''}, the same as "Still open" on the Requisitions page. Click a row for its details.`}
+          page={{ to: '/requisitions?tab=requisitions&status=open', label: 'the Requisitions page' }}
+          onClose={closeDetail}
+        >
+          <Figures
+            items={[
+              { label: 'Open requisitions', value: openRequisitions.length },
+              { label: 'Vacancies to fill', value: openVacancies },
+              { label: 'On hold', value: openRequisitions.filter(({ r }) => r.status === 'On hold').length },
+              { label: 'Open over 30 days', value: openRequisitions.filter(({ r }) => daysOpen(r) > 30).length, tone: openRequisitions.some(({ r }) => daysOpen(r) > 30) ? 'warning' : undefined },
+            ]}
+          />
+          <div className="grid gap-5 md:grid-cols-2">
+            <Section title="By unit"><BarList rows={countRows(openRequisitions.map(({ r }) => requisitionPlace(r)))} empty="No open requisitions." /></Section>
+            <Section title="By status"><BarList rows={countRows(openRequisitions.map(({ r }) => r.status))} empty="No open requisitions." color="bg-sky-600" /></Section>
+          </div>
+          <Section title="Requisitions">
+            <DataTable
+              rows={openRequisitions}
+              rowKey={({ r }) => r.id}
+              rowLabel={({ r }) => `Details of ${r.ref_no} ${r.designation}`}
+              onRowClick={({ r }) => setRequisitionShown(r.id)}
+              empty="No open requisitions."
+              columns={[
+                { label: 'Ref.', value: ({ r }) => r.ref_no, className: 'tabular whitespace-nowrap text-xs' },
+                { label: 'Position', value: ({ r }) => <><span className="font-medium">{r.designation}</span><span className="block text-xs text-ink-muted">{placeText(r) || r.department}</span></> },
+                { label: 'Status', value: ({ r }) => <StatusBadge tone={STATUS_TONE[r.status]}>{r.status}</StatusBadge> },
+                { label: 'Filled', value: ({ r, cvs, filled }) => <span onClick={(event) => event.stopPropagation()}><FillMeter vacancies={r.vacancies} people={cvs} filled={filled} /></span> },
+                { label: 'CVs', align: 'right', value: ({ cvs }) => cvs.length },
+                { label: 'Days open', align: 'right', value: ({ r }) => <span className={daysOpen(r) > 30 ? 'font-semibold text-amber-800' : undefined}>{daysOpen(r)}</span> },
+              ]}
+            />
+          </Section>
+        </DetailDialog>
+      )}
+      {requisitionShown && requisitions.some((r) => r.id === requisitionShown) && (
+        <RequisitionDetails requisition={requisitions.find((r) => r.id === requisitionShown)!} onClose={() => setRequisitionShown(null)} />
+      )}
+
+      {detail === 'cvs' && (
+        <DetailDialog title={`CVs received: ${scoped.length}`} description={period === 'all' ? 'All time.' : `Last ${period} days.`} page={{ to: '/buckets', label: 'CV Buckets' }} onClose={closeDetail}>
+          <Figures
+            items={[
+              { label: 'CVs received', value: scoped.length },
+              { label: 'In process', value: scoped.filter(isActive).length },
+              { label: 'Shortlisted', value: scoped.filter((c) => c.screening_status === 'shortlisted').length },
+              { label: 'Rejected', value: scoped.filter(isRejected).length },
+            ]}
+          />
+          <Section title="By department">
+            <CountTable heading="Department" columns={['CVs', 'Interviews held', 'Primary held']} rows={cvsByDepartment} empty="No CVs in this period." />
+          </Section>
+          <div className="grid gap-5 md:grid-cols-2">
+            <Section title="Where they stand"><BarList rows={stageRows.map((row) => ({ label: row.label, value: Number(row.value) }))} empty="No CVs in this period." limit={20} /></Section>
+            <Section title="By position"><BarList rows={positionRows} empty="No CVs in this period." color="bg-sky-600" /></Section>
+          </div>
+          <Section title="By source"><BarList rows={countRows(scoped.map((c) => c.source))} empty="No CVs in this period." color="bg-amber-500" /></Section>
+        </DetailDialog>
+      )}
+
+      {detail === 'interviews' && (
+        <DetailDialog
+          title="Interview calendar"
+          description="Every interview day is marked. Choose a day to see who is coming and when; click a name to open the candidate."
+          onClose={closeDetail}
+        >
+          <InterviewCalendar events={interviewEvents} onOpenCandidate={openCandidate} />
+          <Section title="Interviews by department">
+            <CountTable heading="Department" columns={['Primary held', 'Final held', 'Next 7 days']} rows={interviewsByDepartment} empty="No interviews held or scheduled." />
+          </Section>
+        </DetailDialog>
+      )}
+
+      {detail === 'review' && (
+        <DetailDialog title="CV review time" description="Time the screening desk spent with each CV open, from opening it to selecting, rejecting or closing it." onClose={closeDetail}>
+          <Figures
+            items={[
+              { label: 'Average per CV', value: reviewCount ? duration(reviewSeconds / reviewCount) : '-' },
+              { label: 'CVs reviewed', value: reviewCount },
+              { label: 'Total time', value: duration(reviewSeconds) },
+              { label: 'Not reviewed yet', value: scoped.filter((c) => c.screening_status === 'new').length },
+            ]}
+          />
+          <Section title="How long each review took">
+            <BarList
+              rows={[
+                { label: 'Under 1 minute', value: reviewedPeople.filter((c) => c.review_seconds < 60).length },
+                { label: '1 to 3 minutes', value: reviewedPeople.filter((c) => c.review_seconds >= 60 && c.review_seconds < 180).length },
+                { label: '3 to 10 minutes', value: reviewedPeople.filter((c) => c.review_seconds >= 180 && c.review_seconds < 600).length },
+                { label: 'Over 10 minutes', value: reviewedPeople.filter((c) => c.review_seconds >= 600).length },
+              ]}
+              empty="No CV has been reviewed in this period."
+            />
+          </Section>
+          <Section title="CVs reviewed, longest first">
+            <DataTable
+              rows={[...reviewedPeople].sort((a, b) => b.review_seconds - a.review_seconds)}
+              rowKey={(c) => c.id}
+              rowLabel={(c) => `Open ${c.full_name}`}
+              onRowClick={openCandidate}
+              empty="No CV has been reviewed in this period."
+              columns={[
+                { label: 'Name', value: (c) => <span className="font-medium">{c.full_name}</span> },
+                { label: 'Position', value: designationOf },
+                { label: 'Where they stand', value: (c) => stageOf(c).label },
+                { label: 'Sittings', align: 'right', value: (c) => c.review_count },
+                { label: 'Time', align: 'right', value: (c) => duration(c.review_seconds) },
+              ]}
+            />
+          </Section>
+        </DetailDialog>
+      )}
+
+      {detail === 'selected' && (
+        <DetailDialog title="Merit and waiting lists" page={{ to: '/selected', label: 'Selected Candidates' }} onClose={closeDetail}>
+          <Figures
+            items={[
+              { label: 'Merit list', value: meritList.length },
+              { label: 'Waiting list', value: waitingList.length },
+              { label: 'Letters to send', value: offersToSend, tone: offersToSend ? 'warning' : undefined },
+              { label: 'Joined', value: selected.filter((c) => c.joining_status === 'joined').length },
+            ]}
+          />
+          <Section title="Offer letters by department">
+            <CountTable heading="Department" columns={['Sent', 'Accepted', 'Did not confirm']} rows={lettersByDepartment} empty="No offer letter sent yet." />
+          </Section>
+          {(['merit', 'waiting'] as const).map((list) => (
+            <Section key={list} title={`${CATEGORY_LABELS[list]} list`}>
+              <DataTable
+                rows={list === 'merit' ? meritList : waitingList}
+                rowKey={(c) => c.id}
+                rowLabel={(c) => `Open ${c.full_name}`}
+                onRowClick={openCandidate}
+                empty={`No one on the ${list} list.`}
+                maxHeight="max-h-72"
+                columns={[
+                  { label: 'Name', value: (c) => <span className="font-medium">{c.full_name}</span> },
+                  { label: 'Position', value: designationOf },
+                  { label: 'Final score', align: 'right', value: (c) => (c.secondary_score !== null ? `${c.secondary_score}/10` : '-') },
+                  { label: 'Status', value: (c) => (list === 'merit' ? JOINING[c.joining_status].label : afterFinal(c).label) },
+                  ...(list === 'merit' ? [{ label: 'Joins', value: (c: Candidate) => whenText(joiningWhen(c).date, joiningWhen(c).time) || '-' }] : []),
+                  { label: 'Remarks', value: (c) => <span className="line-clamp-2 text-xs" title={c.secondary_feedback}>{c.secondary_feedback || '-'}</span> },
+                ]}
+              />
+            </Section>
+          ))}
+        </DetailDialog>
+      )}
+
+      {detail === 'hire' && (
+        <DetailDialog title="Time to hire" description="Days from receiving the CV to selection at the final interview." page={{ to: '/selected', label: 'Selected Candidates' }} onClose={closeDetail}>
+          <Figures
+            items={[
+              { label: 'Average', value: avgHire === null ? '-' : `${avgHire} d` },
+              { label: 'Fastest', value: hireRows.length ? `${hireRows[0].days} d` : '-' },
+              { label: 'Slowest', value: hireRows.length ? `${hireRows[hireRows.length - 1].days} d` : '-' },
+              { label: 'People selected', value: hireRows.length },
+            ]}
+          />
+          <div className="grid gap-5 md:grid-cols-2">
+            <Section title="Each person">
+              <BarList rows={hireRows.map(({ c, days }) => ({ label: c.full_name, note: designationOf(c), value: days, text: `${days} d` }))} empty="No one selected in this period." limit={15} />
+            </Section>
+            <Section title="Average by position">
+              <BarList
+                rows={[...new Set(hireRows.map(({ c }) => designationOf(c)))].map((position) => {
+                  const days = hireRows.filter(({ c }) => designationOf(c) === position).map((row) => row.days);
+                  const average = Math.round(days.reduce((a, b) => a + b, 0) / days.length);
+                  return { label: position, value: average, text: `${average} d`, note: `${days.length} selected` };
+                }).sort((a, b) => b.value - a.value)}
+                empty="No one selected in this period."
+                color="bg-sky-600"
+              />
+            </Section>
+          </div>
+        </DetailDialog>
+      )}
+
+      {detail === 'rating' && (
+        <DetailDialog title="Candidate rating" description={`From ${submitted.length} of ${scopedReviews.length} candidates asked for feedback.`} page={{ to: '/reviews', label: 'Candidate Reviews' }} onClose={closeDetail}>
+          <Section title="Average out of 5">
+            <BarList
+              max={5}
+              color="bg-amber-500"
+              empty="No reviews yet."
+              rows={submitted.length === 0 ? [] : [
+                { label: 'Overall', pick: (r: (typeof reviews)[number]) => r.overall },
+                { label: 'Communication', pick: (r: (typeof reviews)[number]) => r.communication },
+                { label: 'Professionalism', pick: (r: (typeof reviews)[number]) => r.professionalism },
+                { label: 'Clear process', pick: (r: (typeof reviews)[number]) => r.clarity },
+              ].map(({ label, pick }) => {
+                const values = submitted.map(pick).filter((v): v is number => v !== null);
+                const average = values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+                return { label, value: average, text: values.length ? average.toFixed(1) : '-' };
+              })}
+            />
+          </Section>
+          <Section title="Latest feedback">
+            <DataTable
+              rows={[...submitted].sort((a, b) => (b.submitted_at ?? '').localeCompare(a.submitted_at ?? ''))}
+              rowKey={(r) => r.id}
+              empty="No reviews yet."
+              columns={[
+                { label: 'Candidate', value: (r) => <span className="font-medium">{candidates.find((c) => c.id === r.candidate_id)?.full_name}</span> },
+                { label: 'Interview', value: (r) => (r.stage === 'primary' ? 'Primary' : 'Final') },
+                { label: 'Overall', align: 'right', value: (r) => `${r.overall}/5` },
+                { label: 'Comments', value: (r) => <span className="line-clamp-2 text-xs">{r.comments || '-'}</span> },
+                { label: 'Sent', value: (r) => dayMonth(r.submitted_at), className: 'whitespace-nowrap text-xs' },
+              ]}
+            />
+          </Section>
+        </DetailDialog>
       )}
     </>
   );

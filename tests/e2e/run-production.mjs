@@ -354,6 +354,18 @@ async function main() {
   const reviewLink = await reviewField.inputValue();
   await reviewDialog.getByRole('button', { name: 'Close', exact: true }).click();
 
+  // The candidate answers while still at this step: once the final interview is scheduled the link closes.
+  const reviewer = await browser.newContext({ viewport: { width: 420, height: 860 } });
+  const reviewPage = await reviewer.newPage();
+  await reviewPage.goto(reviewLink);
+  await reviewPage.getByRole('heading', { name: /How was your interview, Rupa/ }).waitFor();
+  await reviewPage.locator('fieldset', { hasText: 'Overall experience' }).locator('label').nth(4).click();
+  await reviewPage.getByRole('radio', { name: 'Yes' }).check();
+  await reviewPage.getByLabel('Share your experience').fill('Very professional.');
+  await reviewPage.getByRole('button', { name: 'Send feedback' }).click();
+  await reviewPage.getByRole('heading', { name: 'Thank you for your feedback' }).waitFor();
+  await reviewer.close();
+
   await step('Set interview schedule').click();
   const finalMessage = page.getByRole('dialog', { name: 'Set final interview schedule' });
   await finalMessage.getByLabel('Interview on: day').fill('2026-12-09');
@@ -500,15 +512,21 @@ async function main() {
   await applicant.getByText('This application link is not valid.').waitFor();
   check('Unknown application link is refused', true);
 
+  const review = (await supabase.db.query('select overall, would_recommend, comments, submitted_at from public.candidate_reviews where submitted_at is not null')).rows[0];
+  check('Anonymous review stored through the public function', review?.overall === 5 && review.would_recommend === true && review.comments === 'Very professional.');
   await applicant.goto(reviewLink);
-  await applicant.getByRole('heading', { name: /How was your interview, Rupa/ }).waitFor();
-  await applicant.locator('fieldset', { hasText: 'Overall experience' }).locator('label').nth(4).click();
-  await applicant.getByRole('radio', { name: 'Yes' }).check();
-  await applicant.getByLabel('Share your experience').fill('Very professional.');
-  await applicant.getByRole('button', { name: 'Send feedback' }).click();
   await applicant.getByRole('heading', { name: 'Thank you for your feedback' }).waitFor();
-  const review = (await supabase.db.query('select overall, would_recommend, comments, submitted_at from public.candidate_reviews')).rows[0];
-  check('Anonymous review stored through the public function', review.overall === 5 && review.would_recommend === true && review.comments === 'Very professional.');
+  check('A review link works once only', await applicant.getByRole('button', { name: 'Send feedback' }).count() === 0);
+  // Hena has had no interview yet, so a link made for her takes no answers, and the database refuses one sent anyway.
+  const [{ token: closedToken }] = (await supabase.db.query(`insert into public.candidate_reviews (candidate_id, stage) select id, 'primary' from public.candidates where full_name = 'Hena Begum' returning token`)).rows;
+  await applicant.goto(`${BASE}/review/${closedToken}`);
+  await applicant.getByRole('heading', { name: 'This feedback link has closed' }).waitFor();
+  const forced = await fetch(`http://localhost:${SUPABASE_PORT}/rest/v1/rpc/submit_review`, {
+    method: 'POST',
+    headers: { apikey: 'test-anon-key', 'content-type': 'application/json' },
+    body: JSON.stringify({ p_token: closedToken, p_overall: 5, p_communication: null, p_professionalism: null, p_clarity: null, p_would_recommend: true, p_comments: '' }),
+  });
+  check('A closed feedback link is refused by the database', !forced.ok && (await forced.text()).includes('closed'));
   await visitor.close();
 
   // --- Direct attacks with the anon key, the way anyone with the public key could try

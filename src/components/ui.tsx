@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, CircleDashed, Clock, Info, Loader2, Star, X, XCircle, type LucideIcon } from 'lucide-react';
+import { AlertCircle, CheckCircle2, CircleDashed, Clock, Info, Loader2, Maximize2, Star, X, XCircle, type LucideIcon } from 'lucide-react';
 import {
   createContext,
   useCallback,
@@ -14,7 +14,6 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react';
-import { Link } from 'react-router-dom';
 import { classNames, initials } from '../lib/format';
 import { recommendations, recommendationSummary, type Tone } from '../lib/pipeline';
 import type { Candidate } from '../types';
@@ -537,11 +536,13 @@ interface HoverTooltipProps {
   /** Makes the wrapper itself focusable and names it. Leave out when the children hold their own link or button. */
   label?: string;
   className?: string;
+  /** Hides the tooltip on click, for a trigger that opens a window of its own. */
+  closeOnClick?: boolean;
   children: ReactNode | ((state: { open: boolean; tooltipId: string }) => ReactNode);
 }
 
 /** Shows details on hover or keyboard focus. Fixed position, so a scrolling table or card edge cannot clip it. */
-export function HoverTooltip({ details, side = 'below', label, className, children }: HoverTooltipProps) {
+export function HoverTooltip({ details, side = 'below', label, className, closeOnClick, children }: HoverTooltipProps) {
   const [position, setPosition] = useState<CSSProperties | null>(null);
   const tooltipId = useId();
   const tooltip = useRef<HTMLDivElement>(null);
@@ -577,6 +578,7 @@ export function HoverTooltip({ details, side = 'below', label, className, childr
         if (event.target.matches(':focus-visible')) setPosition(tooltipPosition(event.currentTarget.getBoundingClientRect(), side));
       }}
       onBlur={() => setPosition(null)}
+      onClickCapture={closeOnClick ? () => setPosition(null) : undefined}
     >
       {typeof children === 'function' ? children({ open, tooltipId }) : children}
       <div ref={tooltip} id={tooltipId} role="tooltip" hidden={!open} className="fixed z-10 box-border font-normal" style={position ?? undefined}>
@@ -590,38 +592,41 @@ interface InsightTileProps {
   label: string;
   value: ReactNode;
   hint?: string;
-  to: string;
-  linkLabel: string;
+  /** Opens the full details, in a window over the dashboard. */
+  onOpen: () => void;
   details: ReactNode;
 }
 
-/** A stat card that opens a page when clicked and shows the numbers behind it on hover or keyboard focus. */
-export function InsightTile({ label, value, hint, to, linkLabel, details }: InsightTileProps) {
+/** A stat card: a quick look on hover or keyboard focus, and the full details in a window when clicked. */
+export function InsightTile({ label, value, hint, onOpen, details }: InsightTileProps) {
   return (
     <HoverTooltip
+      closeOnClick
       details={
         <>
           {details}
-          <p className="mt-2 border-t border-line pt-2 text-ink-muted">Click the card to open {linkLabel}.</p>
+          <p className="mt-2 border-t border-line pt-2 text-ink-muted">Click the card for the full details.</p>
         </>
       }
     >
       {({ open, tooltipId }) => (
-        <Link
-          to={to}
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-haspopup="dialog"
           aria-describedby={tooltipId}
           className={classNames(
-            'flex h-full flex-col rounded-xl border bg-surface px-3.5 py-3 transition-[border-color,box-shadow]',
+            'flex h-full w-full flex-col rounded-xl border bg-surface px-3.5 py-3 text-left transition-[border-color,box-shadow]',
             open ? 'border-brand-600 shadow-md' : 'border-line',
           )}
         >
-          <span className="flex items-start justify-between gap-2 text-xs font-medium text-ink-muted">
+          <span className="flex w-full items-start justify-between gap-2 text-xs font-medium text-ink-muted">
             {label}
-            <Info className={classNames('size-3.5 shrink-0 transition-colors', open ? 'text-brand-600' : 'text-line-strong')} aria-hidden />
+            <Maximize2 className={classNames('size-3.5 shrink-0 transition-colors', open ? 'text-brand-600' : 'text-line-strong')} aria-hidden />
           </span>
           <span className="mt-0.5 text-2xl font-semibold tracking-tight">{value}</span>
           {hint && <span className="mt-0.5 text-xs text-ink-muted">{hint}</span>}
-        </Link>
+        </button>
       )}
     </HoverTooltip>
   );

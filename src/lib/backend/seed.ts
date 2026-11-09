@@ -6,6 +6,7 @@ import type {
   CvBucket,
   CvReviewSession,
   Designation,
+  EditRequest,
   JobPosting,
   Profile,
   Question,
@@ -120,6 +121,7 @@ const BASE: Omit<Candidate, 'id' | 'bucket_id' | 'full_name' | 'phone' | 'email'
   joining_call_time: '',
   joining_confirmed_date: null,
   joining_confirmed_time: '',
+  joining_remarks: '',
   offered_salary: null,
   employee_code: '',
   probation_period: '',
@@ -243,6 +245,19 @@ export function buildDemoData() {
     job_description: `Responsibilities and requirements for ${des.title}.`,
     created_at: stamp(-createdDaysAgo),
     filled_at: null,
+    unit: 'CHO',
+    section: des.department === 'HR & Admin' ? 'HR' : '',
+    subsection: '',
+    vacancy_type: ref % 2 === 0 ? 'Replacement' : 'New',
+    replacing: ref % 2 === 0 ? 'Demo Former Employee' : '',
+    requisition_date: daysFromNow(-createdDaysAgo),
+    approved_on: status === 'Pending approval' ? null : daysFromNow(-createdDaysAgo + 1),
+    offer_date: null,
+    expected_joining: null,
+    selected_names: '',
+    remarks: '',
+    sheet_key: null,
+    sheet_data: {},
   });
 
   const requisitions: Requisition[] = [
@@ -288,6 +303,9 @@ export function buildDemoData() {
     accepting_applications: true,
     description: '',
     created_at: stamp(-daysAgo),
+    unit: 'CHO',
+    section: department === 'HR & Admin' ? 'HR' : '',
+    subsection: '',
   });
 
   const cv_buckets: CvBucket[] = [
@@ -480,6 +498,7 @@ export function buildDemoData() {
     candidate_reviews,
     cv_review_sessions,
     questions: sampleQuestions(),
+    edit_requests: [] as EditRequest[],
   };
 }
 

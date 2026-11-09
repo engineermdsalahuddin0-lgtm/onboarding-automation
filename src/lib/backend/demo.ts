@@ -1,5 +1,5 @@
-import type { AppNotification, Candidate, CandidateEvent, CandidateReview, CvBucket, Profile, Requisition, Settings } from '../../types';
-import { LOCKED_FIELDS, normalizePhone } from '../pipeline';
+import type { AppNotification, Candidate, CandidateEvent, CandidateReview, CvBucket, EditRequest, EditStep, Profile, Requisition, Settings } from '../../types';
+import { EDIT_STEP_FIELDS, EDIT_STEP_LABELS, isReviewOpen, LOCKED_FIELDS, normalizePhone } from '../pipeline';
 import { completedStep, COMPLETES_PROCESS, PROCESS_FIELDS, SCREENING_FIELDS } from '../team';
 import { buildDemoData } from './seed';
 import { BackendError, type Backend, type ListOptions, type PresenceEntry, type RpcName, type TableName } from './types';
@@ -9,7 +9,7 @@ import { BackendError, type Backend, type ListOptions, type PresenceEntry, type 
 
 const DB_NAME = 'bitopi-onboarding-demo';
 // Bump when the sample data's shape changes: browsers holding an older copy start again from fresh samples.
-const STATE_KEY = 'state-v8';
+const STATE_KEY = 'state-v9';
 
 type Row = Record<string, any>;
 type State = Record<string, Row[]> & { __secrets?: any };
@@ -155,6 +155,7 @@ const CANDIDATE_DEFAULTS: Partial<Candidate> = {
   joining_call_time: '',
   joining_confirmed_date: null,
   joining_confirmed_time: '',
+  joining_remarks: '',
   offered_salary: null,
   employee_code: '',
   probation_period: '',
@@ -189,14 +190,27 @@ function checkPipeline(row: Row) {
   }
 }
 
+/** An approved correction being applied: it may change its own step's fields on a locked candidate. */
+let activeGrant: { candidateId: string; step: EditStep } | null = null;
+
 function checkLock(row: Row, next: Row) {
   if (!row.final_decision || !next.final_decision) return;
+  const grant = activeGrant;
+  const allowed: readonly string[] = grant && grant.candidateId === row.id ? EDIT_STEP_FIELDS[grant.step] : [];
   for (const field of LOCKED_FIELDS) {
-    if (JSON.stringify(row[field] ?? null) !== JSON.stringify(next[field] ?? null)) {
+    if (JSON.stringify(row[field] ?? null) !== JSON.stringify(next[field] ?? null) && !allowed.includes(field)) {
       throw new BackendError("This candidate's process is locked. An admin has to unlock it first.");
     }
   }
 }
+
+const REQUISITION_DEFAULTS: Partial<Requisition> = {
+  designation_id: null, department: '', company: '', vacancies: 1, priority: 'Medium', employment_type: 'Permanent', location: '',
+  hiring_manager: '', requested_by: '', budget_min: null, budget_max: null, target_date: null, status: 'Pending approval',
+  justification: '', job_description: '', filled_at: null, unit: '', section: '', subsection: '', vacancy_type: '', replacing: '',
+  requisition_date: null, approved_on: null, offer_date: null, expected_joining: null, selected_names: '', remarks: '',
+  sheet_key: null, sheet_data: {},
+};
 
 const changed = (row: Row, next: Row, fields: readonly string[]) =>
   fields.some((field) => JSON.stringify(row[field] ?? null) !== JSON.stringify(next[field] ?? null));
@@ -373,9 +387,7 @@ export function createDemoBackend(): Backend {
           id: crypto.randomUUID(),
           ref_no: `REQ-${new Date().getFullYear()}-${String(count).padStart(4, '0')}`,
           created_at: now,
-          filled_at: null,
-          designation_id: null,
-          status: 'Pending approval',
+          ...REQUISITION_DEFAULTS,
           ...row,
         };
       }
@@ -387,6 +399,13 @@ export function createDemoBackend(): Backend {
           status: 'Open',
           accepting_applications: true,
           requisition_id: null,
+          department: '',
+          company: '',
+          color: 'stone',
+          description: '',
+          unit: '',
+          section: '',
+          subsection: '',
           ...row,
         };
       case 'questions': {
@@ -564,12 +583,17 @@ export function createDemoBackend(): Backend {
       if (name === 'cv_buckets' && table('candidates').some((c) => c.bucket_id === match.id)) {
         throw new BackendError('This bucket still holds candidates. Archive it instead.');
       }
-      state[name] = table(name).filter((row) => !matches(row, match));
-      if (name === 'candidates' && match.id) {
-        for (const child of ['candidate_events', 'message_log', 'candidate_reviews', 'cv_review_sessions']) {
-          state[child] = table(child).filter((row) => row.candidate_id !== match.id);
+      // As the database's security rules: only an admin deletes candidates, and nothing is deleted otherwise.
+      if (name === 'candidates' && demoUser().role !== 'admin') return;
+      const removed = new Set(table(name).filter((row) => matches(row, match)).map((row) => row.id as string));
+      state[name] = table(name).filter((row) => !removed.has(row.id));
+      // What the database removes with them (on delete cascade).
+      if (name === 'candidates') {
+        for (const child of ['candidate_events', 'message_log', 'candidate_reviews', 'cv_review_sessions', 'notifications', 'edit_requests']) {
+          state[child] = table(child).filter((row) => !removed.has(row.candidate_id));
         }
       }
+      if (name === 'cv_buckets') state.notifications = table('notifications').filter((row) => !removed.has(row.bucket_id));
       await persist();
     },
 
@@ -636,14 +660,21 @@ export function createDemoBackend(): Backend {
             group_name: settings.group_name,
             stage: review.stage,
             submitted: review.submitted_at !== null,
+            open: isReviewOpen(candidate, review.stage),
           } as T;
         }
         case 'submit_review': {
           const review = table('candidate_reviews').find(
             (r) => r.token === args.p_token && r.submitted_at === null,
           );
-          if (!review) throw new BackendError('This review link is invalid or has already been used.');
           if (!args.p_overall) throw new BackendError('Overall rating is required.');
+          if (review) {
+            const candidate = table('candidates').find((c) => c.id === review.candidate_id) as Candidate | undefined;
+            if (candidate && !isReviewOpen(candidate, review.stage as 'primary' | 'secondary')) {
+              throw new BackendError('This feedback link has closed: the interview process has moved on.');
+            }
+          }
+          if (!review) throw new BackendError('This review link is invalid or has already been used.');
           Object.assign(review, {
             overall: args.p_overall,
             communication: args.p_communication,
@@ -667,12 +698,100 @@ export function createDemoBackend(): Backend {
           const value: string = state.__secrets?.gemini_api_key ?? '';
           return { configured: Boolean(value), last4: value.slice(-4) } as T;
         }
+        // Corrections, as request_edit, decide_edit, cancel_edit and apply_edit in schema.sql.
+        case 'request_edit': {
+          const me = demoUser();
+          if (me.role !== 'admin' && me.role !== 'hr') throw new BackendError('Only HR and admins can ask for a correction.');
+          const step = args.p_step as EditStep;
+          if (!EDIT_STEP_FIELDS[step]) throw new BackendError(`There is no step called ${step}.`);
+          const reason = String(args.p_reason ?? '').trim().slice(0, 1000);
+          if (reason.length < 3) throw new BackendError('Say what was entered wrongly, so the approver knows what to check.');
+          const candidate = table('candidates').find((c) => c.id === args.p_candidate);
+          if (!candidate) throw new BackendError('This candidate was not found.');
+          if (table('edit_requests').some((r) => r.candidate_id === candidate.id && r.step === step && r.requested_by === me.id && ['pending', 'approved'].includes(r.status))) {
+            throw new BackendError('You already asked to correct this step. It is waiting for an answer, or approved and ready for you.');
+          }
+          const request: EditRequest = {
+            id: crypto.randomUUID(), candidate_id: candidate.id, step, reason, status: 'pending', requested_by: me.id, requested_by_name: actorName(),
+            decided_by: null, decided_by_name: '', decided_at: null, decision_note: '', used_at: null, created_at: new Date().toISOString(),
+          };
+          table('edit_requests').push(request);
+          for (const admin of (state.profiles as unknown as Profile[]).filter((p) => p.role === 'admin' && p.id !== me.id)) {
+            push(admin.id, { event: 'edit_request', actor_name: actorName(), item_count: 1, subject: candidate.full_name, designation: designationOf(candidate.bucket_id), detail: `${EDIT_STEP_LABELS[step]}: ${reason.slice(0, 200)}`, candidate_id: candidate.id, bucket_id: candidate.bucket_id }, false);
+          }
+          await persist();
+          return structuredClone(request) as T;
+        }
+        case 'decide_edit': {
+          const me = demoUser();
+          if (me.role !== 'admin') throw new BackendError('Only an admin can answer a correction request.');
+          const request = table('edit_requests').find((r) => r.id === args.p_request);
+          if (!request) throw new BackendError('This correction request was not found.');
+          if (request.status !== 'pending') throw new BackendError('This request was already answered or withdrawn.');
+          const note = String(args.p_note ?? '').trim().slice(0, 1000);
+          Object.assign(request, { status: args.p_approve ? 'approved' : 'rejected', decided_by: me.id, decided_by_name: actorName(), decided_at: new Date().toISOString(), decision_note: note });
+          const candidate = table('candidates').find((c) => c.id === request.candidate_id)!;
+          if (request.requested_by !== me.id) {
+            push(request.requested_by, { event: args.p_approve ? 'edit_approved' : 'edit_rejected', actor_name: actorName(), item_count: 1, subject: candidate.full_name, designation: designationOf(candidate.bucket_id), detail: `${EDIT_STEP_LABELS[request.step as EditStep]}${note ? `: ${note.slice(0, 200)}` : ''}`, candidate_id: candidate.id, bucket_id: candidate.bucket_id }, false);
+          }
+          await persist();
+          return structuredClone(request) as T;
+        }
+        case 'cancel_edit': {
+          const request = table('edit_requests').find((r) => r.id === args.p_request && r.requested_by === demoUser().id && ['pending', 'approved'].includes(r.status));
+          if (!request) throw new BackendError('Only an open request of your own can be withdrawn.');
+          request.status = 'cancelled';
+          await persist();
+          return structuredClone(request) as T;
+        }
+        case 'apply_edit': {
+          const me = demoUser();
+          const request = table('edit_requests').find((r) => r.id === args.p_request);
+          if (!request || request.requested_by !== me.id) throw new BackendError('This correction request was not found.');
+          if (request.status !== 'approved') throw new BackendError('This correction is not approved, or it was already used.');
+          const step = request.step as EditStep;
+          const changes = (args.p_changes ?? {}) as Row;
+          const candidate = table('candidates').find((c) => c.id === request.candidate_id)!;
+          const summary: string[] = [];
+          for (const [field, value] of Object.entries(changes)) {
+            if (!(EDIT_STEP_FIELDS[step] as string[]).includes(field)) {
+              throw new BackendError(`A correction of the ${EDIT_STEP_LABELS[step].toLowerCase()} step cannot change ${field}.`);
+            }
+            const before = candidate[field] == null ? '' : typeof candidate[field] === 'object' ? JSON.stringify(candidate[field]) : String(candidate[field]);
+            const after = value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+            if (before !== after) summary.push(`${field}: ${before || '-'} -> ${after || '-'}`);
+          }
+          if (summary.length === 0) throw new BackendError('Nothing was changed.');
+          activeGrant = { candidateId: candidate.id, step };
+          try {
+            await backend.update('candidates', { id: candidate.id }, changes);
+          } finally {
+            activeGrant = null;
+          }
+          Object.assign(request, { status: 'used', used_at: new Date().toISOString() });
+          logEvent(candidate.id, 'correction', step, summary.join('; '), actorName(), me.id);
+          if (request.decided_by && request.decided_by !== me.id) {
+            push(request.decided_by, { event: 'edit_used', actor_name: actorName(), item_count: 1, subject: candidate.full_name, designation: designationOf(candidate.bucket_id), detail: EDIT_STEP_LABELS[step], candidate_id: candidate.id, bucket_id: candidate.bucket_id }, false);
+          }
+          await persist();
+          return structuredClone(request) as T;
+        }
       }
     },
 
     async upload(path, file) {
       await ready;
       await idbPut(db, 'files', path, file);
+    },
+
+    async removeFiles(paths) {
+      await ready;
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('files', 'readwrite');
+        for (const path of paths) tx.objectStore('files').delete(path);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
     },
 
     async signedUrls(paths) {

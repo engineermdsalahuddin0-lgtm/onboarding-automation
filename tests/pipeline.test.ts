@@ -6,10 +6,15 @@ import {
   afterFinal,
   bucketStats,
   confirmDecision,
+  correctableSteps,
+  correctionChanges,
+  EDIT_STEP_FIELDS,
   fillsVacancy,
   findDuplicate,
   isLocked,
+  isReviewOpen,
   joiningWhen,
+  openReviewStage,
   matchesStageFilter,
   nextAction,
   normalizePhone,
@@ -35,7 +40,8 @@ import {
 } from '../src/lib/pipeline';
 import { DEFAULT_DOCUMENT_TEMPLATES, DEFAULT_MESSAGE_TEMPLATES, DEFAULT_SETTINGS } from '../src/lib/defaults';
 import { candidateVars, renderTemplate, slotVars } from '../src/lib/templates';
-import type { Candidate, Settings } from '../src/types';
+import { isOpenRequisition, requisitionFigures, selectedNames } from '../src/lib/requisitions';
+import type { Candidate, CvBucket, Requisition, Settings } from '../src/types';
 
 const fresh = (overrides: Partial<Candidate> = {}) =>
   ({
@@ -418,5 +424,74 @@ describe('CSV export', () => {
     expect(csv).toContain(`"'=HYPERLINK(""x"")"`);
     expect(csv).toContain(`'@cmd`);
     expect(csv).toContain(`'+1+cmd`);
+  });
+});
+
+describe('feedback links', () => {
+  it('open from the primary schedule until the final schedule, then for the final until the decision', () => {
+    let c = { ...fresh(), ...shortlist(), ...setCall('confirm', { by: 'HR' }) };
+    expect(openReviewStage(c)).toBeNull();
+    c = { ...c, ...schedulePrimary({ channel: 'SMS', date: '2026-11-10', time: '11:00' }) };
+    expect(openReviewStage(c)).toBe('primary');
+    c = { ...c, ...setPrimary('selected') };
+    expect(openReviewStage(c)).toBe('primary');
+    c = { ...c, ...scheduleFinal({ date: '2026-11-12', time: '15:00' }) };
+    expect(isReviewOpen(c, 'primary')).toBe(false);
+    expect(openReviewStage(c)).toBe('secondary');
+    c = { ...c, ...setSecondary('selected', { selection_category: 'merit' }) };
+    expect(openReviewStage(c)).toBe('secondary');
+    c = { ...c, ...confirmDecision({ selectedDate: '2026-11-13', selectedTime: '', joiningDate: '2026-12-01', joiningTime: '' }) };
+    expect(openReviewStage(c)).toBeNull();
+  });
+
+  it('stays open after a primary rejection, as there is no next step', () => {
+    const c = { ...fresh(), ...shortlist(), ...setCall('confirm', { by: 'HR' }), ...schedulePrimary({ channel: 'SMS' }), ...setPrimary('rejected') };
+    expect(openReviewStage(c)).toBe('primary');
+  });
+});
+
+describe('open requisitions', () => {
+  const req = (overrides: Partial<Requisition>) => ({ id: 'r', vacancies: 2, status: 'In progress', selected_names: '', created_at: '2026-10-01T06:00:00Z', requisition_date: null, approved_on: null, offer_date: null, sheet_data: {}, ...overrides }) as Requisition;
+
+  it('counts On hold as open, like "Still open" on the Requisitions page', () => {
+    expect(['Pending approval', 'Approved', 'In progress', 'On hold', 'Filled', 'Cancelled'].filter((status) => isOpenRequisition({ status } as Requisition))).toEqual(['Pending approval', 'Approved', 'In progress', 'On hold']);
+  });
+
+  it('counts the merit list or the names on the vacancy sheet, whichever is more', () => {
+    const merit = { ...fullySelected(), id: 'c1', bucket_id: 'b1' } as Candidate;
+    const [withApp] = requisitionFigures([req({})], [{ id: 'b1', requisition_id: 'r' } as CvBucket], [merit]);
+    expect(withApp).toMatchObject({ filled: 1, left: 1 });
+    expect(withApp.cvs).toHaveLength(1);
+    const [fromSheet] = requisitionFigures([req({ selected_names: '1. A\n2. B' })], [], []);
+    expect(fromSheet).toMatchObject({ filled: 2, left: 0 });
+    expect(selectedNames(req({ selected_names: '1. Md. A\n 2. B \n' }))).toEqual(['Md. A', 'B']);
+  });
+});
+
+describe('corrections and joining remarks', () => {
+  it('offers only the steps that hold a recorded result', () => {
+    expect(correctableSteps(fresh())).toEqual([]);
+    expect(correctableSteps(fresh({ screening_status: 'shortlisted', call_status: 'reject' }))).toEqual(['call']);
+    const decided = fresh({
+      screening_status: 'shortlisted', call_status: 'confirm', message_status: 'message_done', primary_status: 'selected',
+      secondary_status: 'selected', selection_category: 'merit', final_decision: 'confirmed',
+    });
+    expect(correctableSteps(decided)).toEqual(['call', 'primary_schedule', 'primary', 'final_schedule', 'final', 'decision']);
+    expect(correctableSteps(fresh({ screening_status: 'shortlisted', call_status: 'confirm', message_status: 'message_done', primary_status: 'scheduled' }))).toEqual(['call', 'primary_schedule']);
+  });
+
+  it('sends only the changed fields of the step, never anything else', () => {
+    const c = fresh({ call_date: '2026-11-02', call_time: '10:00', call_note: 'ok', decision_date: '2026-11-13' });
+    expect(correctionChanges('call', c, { ...c, call_date: '2026-11-01', decision_date: '2020-01-01', call_status: 'reject' })).toEqual({ call_date: '2026-11-01' });
+    expect(correctionChanges('call', c, { ...c })).toEqual({});
+    for (const fields of Object.values(EDIT_STEP_FIELDS)) {
+      expect(fields.some((field) => String(field).endsWith('_status') || field === 'final_decision' || field === 'selection_category')).toBe(false);
+    }
+  });
+
+  it('keeps the joining remarks with the joining call, and leaves them alone when not given', () => {
+    expect(recordJoiningCall({ callDate: '2026-11-20', callTime: '11:00', confirmedDate: '2026-12-03', confirmedTime: '10:00', remarks: '  Brings release letter ' }))
+      .toMatchObject({ joining_remarks: 'Brings release letter', joining_status: 'accepted' });
+    expect(recordJoiningCall({ callDate: '2026-11-20', callTime: '11:00', confirmedDate: null, confirmedTime: '' })).not.toHaveProperty('joining_remarks');
   });
 });

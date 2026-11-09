@@ -53,7 +53,7 @@ export const PROCESS_FIELDS = [
   'secondary_interviewer', 'secondary_score', 'secondary_feedback', 'secondary_panel', 'selection_category',
   'final_decision', 'decision_date', 'decision_time', 'informed_date', 'informed_time', 'decided_by', 'decided_at',
   'joining_status', 'joining_date', 'joining_time', 'joining_call_date', 'joining_call_time',
-  'joining_confirmed_date', 'joining_confirmed_time', 'offered_salary', 'employee_code', 'probation_period',
+  'joining_confirmed_date', 'joining_confirmed_time', 'joining_remarks', 'offered_salary', 'employee_code', 'probation_period',
   'reporting_to', 'documents_received', 'offer_sent_at',
 ] as const;
 
@@ -137,6 +137,15 @@ export function notificationText(n: AppNotification): { title: string; detail: s
         detail: [where, 'Next: the call', n.detail && `"${n.detail}"`].filter(Boolean).join(' · '),
         tone: 'info',
       };
+    // For corrections the detail holds the step, then the reason or the approver's note.
+    case 'edit_request':
+      return { title: `${n.actor_name} asks to correct ${n.subject}`, detail: [n.detail, where].filter(Boolean).join(' · '), tone: 'info' };
+    case 'edit_approved':
+      return { title: `${n.actor_name} approved your correction for ${n.subject}`, detail: [n.detail, 'Open the card to correct it'].filter(Boolean).join(' · '), tone: 'good' };
+    case 'edit_rejected':
+      return { title: `${n.actor_name} turned down your correction for ${n.subject}`, detail: [n.detail, where].filter(Boolean).join(' · '), tone: 'bad' };
+    case 'edit_used':
+      return { title: `${n.actor_name} corrected ${n.subject}`, detail: [n.detail, where].filter(Boolean).join(' · '), tone: 'info' };
     default: {
       const step = STEP_TEXT[n.event] ?? n.event;
       const when = !n.detail
