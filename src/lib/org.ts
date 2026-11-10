@@ -154,8 +154,9 @@ export function outlineToDepartments(text: string): OrgDepartment[] {
 }
 
 // ---------------------------------------------------------------------------
-// The starting structure. RHL is as given by the company; CHO, TAL and BGL hold the departments and
-// sections named in the July 2026 vacancy sheet, to be completed under Settings. MGL is still empty.
+// The starting structure, as the company gave it (organisation.json, November 2026): every unit has the same
+// departments, sections and subsections, and RHL also has Washing. Units go by their short code only.
+// Department codes are the unit's code and the department's short code, e.g. TAL-HRA.
 // ---------------------------------------------------------------------------
 
 const dept = (name: string, code: string, sections: [string, string[]?][] = []): OrgDepartment => ({
@@ -164,80 +165,37 @@ const dept = (name: string, code: string, sections: [string, string[]?][] = []):
   sections: sections.map(([sectionName, subsections = []]) => ({ name: sectionName, subsections })),
 });
 
-const RHL: OrgUnit = {
-  code: 'RHL',
-  name: 'RHL',
-  departments: [
-    dept('ESG', 'RHL-ESG', [['Social'], ['EMS', ['EMS']]]),
-    dept('Finance & Accounts', 'RHL-FIN', [['Finance & Accounts', ['Accounts', 'Finance']]]),
-    dept('CAD & Sample', 'RHL-CAD'),
-    dept('Commercial', 'RHL-COM', [['Commercial', ['Export', 'Customs', 'Import']]]),
-    dept('Engineering & Services', 'RHL-ENG', [['Maintenance', ['Maintenance']], ['Utility & Engineering', ['Electrical', 'Utility']], ['Civil', ['Civil']]]),
-    dept('ERP & IT', 'RHL-IT', [['General', ['General']], ['ERP', ['Development']], ['IT', ['Support', 'IT']]]),
-    dept('HR & Admin', 'RHL-HRA', [
-      ['HR', ['Compensation, Benefits & HR Analytics', 'Talent Acquisition & Onboarding', 'PMS, Learning & OD']],
-      ['Admin', ['Cafeteria & House Keeping Management', 'Transportation Management', 'Safety, Security & Emergency Management', 'General']],
-    ]),
-    dept('MIS & Internal Audit', 'RHL-MIS', [['MIS & Internal Audit', ['MIS', 'Internal Audit']]]),
-    dept('Production', 'RHL-PROD', [['Cutting'], ['Finishing', ['Finishing']], ['Sewing']]),
-    dept('Production Planning & Control', 'RHL-PPC', [['Planning', ['Planning']]]),
-    dept('QA, Audit & Technical', 'RHL-QA', [['Laboratory', ['Lab']]]),
-    dept('Store & Warehouse', 'RHL-STW', [['Store', ['Store']]]),
-    dept('IE', 'RHL-IE2'),
-    dept('Technical', 'RHL-TECH'),
-    dept('Employee Relations & Engagement', 'RHL-ER6'),
-  ],
+/** Every unit's departments: [name, short code, sections with their subsections]. */
+const COMMON_DEPARTMENTS: [string, string, [string, string[]?][]][] = [
+  ['CAD & Sample', 'CAD', []],
+  ['Commercial', 'COM', [['Commercial', ['Customs', 'Export', 'Import']]]],
+  ['Employee Relations & Engagement', 'ERE', []],
+  ['Engineering & Services', 'ENG', [['Civil', ['Civil']], ['Maintenance', ['Maintenance']], ['Utility & Engineering', ['Electrical', 'Utility']]]],
+  ['ERP & IT', 'IT', [['ERP', ['Development']], ['General', ['General']], ['IT', ['IT', 'Support']]]],
+  ['ESG', 'ESG', [['EMS', ['EMS']], ['Social']]],
+  ['Finance & Accounts', 'FIN', [['Finance & Accounts', ['Accounts', 'Finance']]]],
+  ['HR & Admin', 'HRA', [
+    ['Admin', ['Cafeteria & House Keeping Management', 'General', 'Safety, Security & Emergency Management', 'Transportation Management']],
+    ['HR', ['Compensation, Benefits & HR Analytics', 'PMS, Learning & OD', 'Talent Acquisition & Onboarding']],
+  ]],
+  ['IE', 'IE2', []],
+  ['MIS & Internal Audit', 'MIS', [['MIS & Internal Audit', ['Internal Audit', 'MIS']]]],
+  ['Production', 'PROD', [['Cutting'], ['Finishing', ['Finishing']], ['Sewing']]],
+  ['Production Planning & Control', 'PPC', [['Planning', ['Planning']]]],
+  ['QA, Audit & Technical', 'QA', [['Laboratory', ['Lab']]]],
+  ['Store & Warehouse', 'STW', [['Store', ['Store']]]],
+  ['Technical', 'TECH', []],
+];
+
+/** Departments only some units have. */
+const EXTRA_DEPARTMENTS: Record<string, [string, string, [string, string[]?][]][]> = {
+  RHL: [['Washing', 'WASH', []]],
 };
 
-export const DEFAULT_ORG_STRUCTURE: OrgUnit[] = [
-  {
-    code: 'CHO',
-    name: 'CHO',
-    departments: [
-      dept('MIS & Internal Audit', '', [['MIS'], ['Internal Audit']]),
-      dept('Marketing & Merchandising', '', [['Merchandising']]),
-      dept('ESG', '', [['Social']]),
-      dept('HR & Admin', '', [['ER'], ['Tech']]),
-      dept('CAD & Sample', '', [['CAD'], ['Quality']]),
-      dept('Engineering & Services', '', [['Utility']]),
-      dept('Production Planning & Control', '', [['Planning']]),
-      dept('Design & Product Development', '', [['Design']]),
-    ],
-  },
-  {
-    code: 'TAL',
-    name: 'TAL',
-    departments: [
-      dept('Production', '', [['Finishing'], ['Cutting'], ['Sewing']]),
-      dept('MIS & Internal Audit', '', [['Internal Audit']]),
-      dept('ESG', '', [['Social'], ['Fire Safety']]),
-      dept('HR & Admin', '', [['L & OD'], ['HR'], ['Medical'], ['Security']]),
-      dept('CAD & Sample', '', [['CAD']]),
-      dept('IE', '', [['Quilting'], ['IE'], ['Technical']]),
-      dept('IE & Technical', '', [['Quilting']]),
-      dept('QA, Audit & Technical', '', [['Finishing'], ['Quality'], ['Sewing'], ['GPQ']]),
-      dept('Production Planning & Control', '', [['Planning']]),
-      dept('Washing', '', [['Dry Process'], ['Wet Process']]),
-      dept('Engineering & Services', '', [['Maintenance'], ['Utility']]),
-      dept('Store & Warehouse', '', [['Finished Good']]),
-    ],
-  },
-  {
-    code: 'BGL',
-    name: 'BGL',
-    departments: [
-      dept('QA, Audit & Technical', '', [['Quality (GPQ)'], ['Quality']]),
-      dept('Production', '', [['Sewing - Technical'], ['Finishing']]),
-      dept('Washing', '', [['Wash']]),
-      dept('CAD & Sample', ''),
-      dept('IE', '', [['IE']]),
-      dept('Engineering & Services', '', [['Maintenance']]),
-      dept('Printing', '', [['Printing']]),
-      dept('Technical', '', [['Sewing Technical']]),
-      dept('Store', '', [['Store']]),
-      dept('HR & Admin', '', [['Admin'], ['HR']]),
-    ],
-  },
-  RHL,
-  { code: 'MGL', name: 'MGL', departments: [] },
-];
+const unitOf = (code: string): OrgUnit => ({
+  code,
+  name: code,
+  departments: [...COMMON_DEPARTMENTS, ...(EXTRA_DEPARTMENTS[code] ?? [])].map(([name, short, sections]) => dept(name, `${code}-${short}`, sections)),
+});
+
+export const DEFAULT_ORG_STRUCTURE: OrgUnit[] = ['CHO', 'MGL', 'RHL', 'TAL', 'BGL'].map(unitOf);

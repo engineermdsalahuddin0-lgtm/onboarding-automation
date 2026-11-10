@@ -408,10 +408,63 @@ async function main() {
   await page.getByRole('tab', { name: /^Job postings/ }).click();
   check('Job posting recorded', await page.getByRole('cell', { name: /REQ-\d+-0005/ }).count() > 0);
 
+  // --- New recruitment: the requisition and its bucket in one window
+  await page.goto(`${BASE}/buckets`);
+  await page.getByRole('button', { name: 'New CV bucket' }).click();
+  const recruit = page.getByRole('dialog', { name: 'New CV bucket' });
+  check('New recruitment asks nothing about the company', (await recruit.getByLabel('Company').count()) === 0);
+  const designationOptions = await recruit.getByRole('combobox', { name: /^Designation\b/ }).locator('option').allInnerTexts();
+  check('Designations come from the company chart, one per role, grades hidden', designationOptions.includes('CFO') && designationOptions.includes('CEO') && designationOptions.includes('Junior Executive') && !designationOptions.some((o) => /MS-?\s?\d/.test(o)), designationOptions.join(', '));
+  check('Units are the five codes only', JSON.stringify((await recruit.getByRole('combobox', { name: /^Unit\b/ }).locator('option').allInnerTexts()).slice(1)) === JSON.stringify(['CHO', 'MGL', 'RHL', 'TAL', 'BGL']));
+  await recruit.getByRole('combobox', { name: /^Unit\b/ }).selectOption('TAL');
+  await recruit.getByRole('combobox', { name: /^Department\b/ }).selectOption('HR & Admin');
+  await recruit.getByRole('combobox', { name: /^Section\b/ }).selectOption('HR');
+  await recruit.getByRole('combobox', { name: /^Subsection\b/ }).selectOption('Talent Acquisition & Onboarding');
+  await recruit.getByRole('combobox', { name: /^Designation\b/ }).selectOption('Senior Executive');
+  await recruit.getByRole('button', { name: 'What is Number of posts?' }).hover();
+  const postsTip = await page.getByRole('tooltip').filter({ visible: true }).innerText();
+  check('Number of posts explains itself', postsTip.includes('How many people you will hire') && postsTip.includes('not the number of CVs'), postsTip.replace(/\s+/g, ' '));
+  await recruit.getByRole('spinbutton', { name: /^Number of posts/ }).fill('2');
+  await shot('03b-new-recruitment');
+  await recruit.getByRole('button', { name: 'Create', exact: true }).click();
+  await heading('Senior Executive').waitFor();
+  check('Create opens the new bucket, ready for CVs', /\/buckets\/[^/?]+$/.test(page.url()) && (await page.getByRole('main').innerText()).includes('TAL › HR & Admin › HR'), page.url());
+  await page.goto(`${BASE}/requisitions?tab=requisitions`);
+  const madeRow = page.getByRole('row', { name: /Senior Executive/ });
+  await madeRow.waitFor();
+  const madeText = await madeRow.innerText();
+  check('Its requisition is made with it: place, two posts, under way', madeText.includes('TAL › HR & Admin › HR') && /\b2\b/.test(madeText) && madeText.includes('In progress') && !/MS-?\d/.test(madeText), madeText.replace(/\s+/g, ' '));
+
   // --- CV bucket folders
   await page.goto(`${BASE}/buckets`);
   await heading('CV Buckets').waitFor();
   await shot('04-bucket-folders', { fullPage: true });
+  const tree = page.getByRole('navigation', { name: 'Buckets by unit and department' });
+  const treeUnits = await tree.locator(':scope > ul > li > button').allInnerTexts();
+  check('The tree lists the units with their bucket counts', treeUnits.map((t) => t.replace(/\s+/g, ' ')).join(' | ').startsWith('CHO 3 | MGL 0 | RHL 0 | TAL 1 | BGL 0'), treeUnits.join(' | '));
+  await tree.getByRole('button', { name: /^TAL/ }).click();
+  await tree.getByRole('button', { name: /^HR & Admin/ }).click();
+  await tree.getByRole('button', { name: /^HR\s*1$/ }).click();
+  await page.waitForTimeout(150);
+  const shownFolders = await page.getByRole('main').getByRole('link', { name: /Executive|Specialist|Merchandiser/ }).allInnerTexts();
+  check('Choosing in the tree shows only the buckets there', shownFolders.length === 1 && shownFolders[0].includes('Senior Executive') && page.url().includes('unit=TAL') && page.url().includes('section=HR'), `${shownFolders.length} shown · ${page.url()}`);
+  check('The filters follow the tree', (await page.getByLabel('Filter by section').inputValue()) === 'HR' && (await page.getByLabel('Filter by department').inputValue()) === 'HR & Admin');
+  await shot('04c-bucket-tree');
+  await tree.getByRole('button', { name: /^All buckets/ }).click();
+  await page.waitForURL((url) => !url.search.includes('unit='));
+  await page.getByLabel('Filter by unit').selectOption('CHO');
+  await page.waitForURL(/unit=CHO/);
+  const sectionWaits = await page.waitForFunction(() => document.querySelector('select[aria-label="Filter by section"]')?.disabled, null, { timeout: 3000 }).then(() => true, () => false);
+  check('Section waits for a department', sectionWaits);
+  await page.getByLabel('Filter by department').selectOption('HR & Admin');
+  await page.getByLabel('Filter by section').selectOption('HR');
+  await page.waitForURL(/section=HR/);
+  await page.waitForTimeout(150);
+  const filteredFolders = await page.getByRole('main').getByRole('link', { name: /Jr\. Executive|HR Tech|Merchandiser|Senior Executive/ }).allInnerTexts();
+  const treeHere = await tree.locator('[aria-current="true"]').innerText();
+  check('Unit, department and section filter the folders', filteredFolders.length === 2 && /^HR\s*2$/.test(treeHere.trim()), `${filteredFolders.length} folders; tree on "${treeHere.replace(/\s+/g, ' ')}"`);
+  await page.getByRole('button', { name: 'Clear filters' }).click();
+  await page.getByRole('main').getByRole('link', { name: /Merchandiser/ }).waitFor();
   const folderStat = (name, label) => page.getByRole('link', { name }).evaluate((folder, wanted) => {
     const term = [...folder.querySelectorAll('dt')].find((dt) => dt.textContent === wanted);
     return term?.nextElementSibling?.textContent;

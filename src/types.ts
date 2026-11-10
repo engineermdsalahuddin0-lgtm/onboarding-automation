@@ -166,6 +166,8 @@ export interface Requisition {
   unit: string;
   section: string;
   subsection: string;
+  /** The designation's grade on the company chart (MS-1 to MS-13), kept for reports and never shown. Blank when not on the chart. */
+  grade: string;
   /** New, Replacement, or New & Replacement. */
   vacancy_type: string;
   /** For a replacement: who left, with their ID, as written. */

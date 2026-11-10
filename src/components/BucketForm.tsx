@@ -35,8 +35,8 @@ export function BucketFormDialog({ onClose, bucket, fromRequisition, defaultDepa
     department: bucket?.department ?? fromRequisition?.department ?? defaultDepartment ?? '',
     section: bucket?.section ?? fromRequisition?.section ?? '',
     subsection: bucket?.subsection ?? fromRequisition?.subsection ?? '',
-    // A requisition synced from the vacancy sheet has no company of its own: the default company is used.
-    company: bucket ? bucket.company : fromRequisition?.company || settings.default_company,
+    // The company is always the group; an existing bucket keeps what it has.
+    company: bucket ? bucket.company : fromRequisition?.company || settings.group_name,
     color: bucket?.color ?? 'green',
     status: bucket?.status ?? 'Open',
     accepting_applications: bucket?.accepting_applications ?? true,
@@ -56,7 +56,7 @@ export function BucketFormDialog({ onClose, bucket, fromRequisition, defaultDepa
             department: requisition.department,
             section: requisition.section ?? '',
             subsection: requisition.subsection ?? '',
-            company: requisition.company || settings.default_company,
+            company: requisition.company || settings.group_name,
           }
         : {}),
     });
@@ -98,10 +98,6 @@ export function BucketFormDialog({ onClose, bucket, fromRequisition, defaultDepa
           <TextInput label="Designation" required autoFocus value={form.designation} onChange={(e) => set({ designation: e.target.value })} />
         </div>
         <OrgFields value={form} onChange={(place) => set(place)} />
-        <div className="sm:col-span-2">
-          <TextInput label="Company" value={form.company} list="company-options" onChange={(e) => set({ company: e.target.value })} hint="Printed on the offer letter and joining documents." />
-          <datalist id="company-options">{settings.companies.map((c) => <option key={c} value={c} />)}</datalist>
-        </div>
         <div className="sm:col-span-2">
           <TextArea label="Notes" rows={2} value={form.description} onChange={(e) => set({ description: e.target.value })} />
         </div>

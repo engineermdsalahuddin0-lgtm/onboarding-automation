@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { addToStructure, departmentOptions, departmentsToOutline, nameKey, outlineToDepartments, sectionOptions } from '../src/lib/org';
+import { DESIGNATIONS, gradeOf } from '../src/lib/designations';
+import { addToStructure, DEFAULT_ORG_STRUCTURE, departmentOptions, departmentsToOutline, nameKey, outlineToDepartments, sectionOptions } from '../src/lib/org';
 import { cellDate, cellText, findColumns, parseVacancySheet } from '../src/lib/vacancySheet';
 import type { OrgUnit } from '../src/types';
 
@@ -80,7 +81,7 @@ describe('the vacancy sheet', () => {
     expect(bySl(1).requisition).toMatchObject({
       sheet_key: 'vacancy-sheet:1', ref_no: 'VAC-001', unit: 'TAL', designation: 'Incharge', department: 'Production', section: 'Finishing',
       vacancy_type: 'Replacement', replacing: 'Shahidul Islam, 48200', vacancies: 1, requisition_date: '2026-07-07', approved_on: '2026-07-07',
-      offer_date: '2026-07-13', status: 'Filled', selected_names: 'Md. Noornabi Setu', created_at: '2026-07-07T06:00:00.000Z',
+      offer_date: '2026-07-13', status: 'Filled', selected_names: 'Md. Noornabi Setu', created_at: '2026-07-07T06:00:00.000Z', grade: '',
       filled_at: '2026-07-13T06:00:00.000Z',
     });
     expect(bySl(1).requisition.sheet_data).toMatchObject({ factory: true, cv_received: 'FO', shortlisted_final: 1, final_interview: '2026-07-08', gap: 1 });
@@ -92,7 +93,7 @@ describe('the vacancy sheet', () => {
   });
 
   it('matches names to the structure, fixes known misspellings and says what it changed', () => {
-    expect(bySl(2).requisition).toMatchObject({ unit: 'RHL', department: 'QA, Audit & Technical' });
+    expect(bySl(2).requisition).toMatchObject({ unit: 'RHL', department: 'QA, Audit & Technical', grade: 'MS-12' });
     expect(bySl(3).requisition).toMatchObject({ department: 'Engineering & Services', section: '', status: 'On hold' });
     expect(bySl(3).notes.join(' ')).toMatch(/ditto/);
     expect(bySl(4).requisition).toMatchObject({ department: 'MIS & Internal Audit', section: 'Internal Audit', status: 'In progress' });
@@ -119,6 +120,47 @@ describe('the vacancy sheet', () => {
 
   it('reports a sheet without the needed columns', () => {
     expect(parseVacancySheet('Other', [['Name', 'Phone']], []).missingColumns).toEqual(['Unit', 'Position']);
+  });
+});
+
+describe('designations and grades', () => {
+  it('keeps one grade per designation, roles of one grade apart', () => {
+    expect(DESIGNATIONS.filter((d) => d.grade === 'MS-2').map((d) => d.title)).toEqual(['CEO', 'COO', 'CHRO', 'CFO', 'CMO', 'CTO']);
+    expect(DESIGNATIONS.filter((d) => d.grade === 'MS-1').map((d) => d.title)).toEqual(['Executive Director', 'CSO']);
+    expect(new Set(DESIGNATIONS.map((d) => d.grade)).size).toBe(13);
+  });
+
+  it('finds the grade however the title is written', () => {
+    expect(gradeOf('Executive')).toBe('MS-12');
+    expect(gradeOf('Sr. Executive')).toBe('MS-11');
+    expect(gradeOf('Jr. Executive')).toBe('MS-13');
+    expect(gradeOf('Asst. Manager')).toBe('MS-10');
+    expect(gradeOf('Dy. Manager')).toBe('MS-9');
+    expect(gradeOf('AGM')).toBe('MS-6');
+    expect(gradeOf('DGM / GM')).toBe('MS-5');
+    expect(gradeOf('Executive / Sr. Executive')).toBe('MS-12');
+    expect(gradeOf('Executive (Welfare)')).toBe('MS-12');
+    expect(gradeOf('cfo')).toBe('MS-2');
+    expect(gradeOf('Incharge')).toBe('');
+  });
+});
+
+describe("the company's structure", () => {
+  it('has the five units by code, each with the same departments, and Washing in RHL', () => {
+    expect(DEFAULT_ORG_STRUCTURE.map((u) => u.code)).toEqual(['CHO', 'MGL', 'RHL', 'TAL', 'BGL']);
+    expect(DEFAULT_ORG_STRUCTURE.every((u) => u.name === u.code)).toBe(true);
+    const names = (u: OrgUnit) => u.departments.map((d) => d.name);
+    const tal = DEFAULT_ORG_STRUCTURE.find((u) => u.code === 'TAL')!;
+    const rhl = DEFAULT_ORG_STRUCTURE.find((u) => u.code === 'RHL')!;
+    expect(names(tal)).toHaveLength(15);
+    expect(names(rhl)).toEqual([...names(tal), 'Washing']);
+    expect(rhl.departments.at(-1)?.code).toBe('RHL-WASH');
+    expect(tal.departments.find((d) => d.name === 'HR & Admin')?.code).toBe('TAL-HRA');
+    const count = (pick: (u: OrgUnit) => number) => DEFAULT_ORG_STRUCTURE.reduce((sum, u) => sum + pick(u), 0);
+    expect(count((u) => u.departments.length)).toBe(76);
+    expect(count((u) => u.departments.flatMap((d) => d.sections).length)).toBe(95);
+    expect(count((u) => u.departments.flatMap((d) => d.sections.flatMap((s) => s.subsections)).length)).toBe(135);
+    expect(sectionOptions(DEFAULT_ORG_STRUCTURE, 'CHO', 'HR & Admin')).toEqual(['Admin', 'HR']);
   });
 });
 

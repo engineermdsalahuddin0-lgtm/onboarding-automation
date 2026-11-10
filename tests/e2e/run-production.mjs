@@ -172,12 +172,27 @@ async function main() {
   const posting = page.getByRole('dialog', { name: 'Record a job posting' });
   await posting.getByRole('button', { name: 'Save' }).click();
   await posting.waitFor({ state: 'detached' });
+  // A new recruitment saves its requisition and bucket together, with the grade kept out of sight.
+  await page.goto(`${BASE}/buckets`);
+  await page.getByRole('button', { name: 'New CV bucket' }).click();
+  const recruit = page.getByRole('dialog', { name: 'New CV bucket' });
+  await recruit.getByRole('combobox', { name: /^Unit\b/ }).selectOption('RHL');
+  await recruit.getByRole('combobox', { name: /^Department\b/ }).selectOption('Washing');
+  await recruit.getByRole('combobox', { name: /^Designation\b/ }).selectOption('Assistant Manager');
+  await recruit.getByRole('spinbutton', { name: /^Number of posts/ }).fill('3');
+  await recruit.getByRole('button', { name: 'Create', exact: true }).click();
+  await page.getByRole('heading', { name: 'Assistant Manager' }).waitFor();
+  const recruited = (await supabase.db.query(`select r.grade, r.company, r.vacancies, r.status, r.unit, r.department, b.designation as bucket, b.unit as bucket_unit from public.requisitions r join public.cv_buckets b on b.requisition_id = r.id where r.designation = 'Assistant Manager'`)).rows;
+  check('New recruitment saves the requisition and its bucket together, with the grade', recruited.length === 1 && recruited[0].grade === 'MS-10' && recruited[0].company === 'Bitopi Group' && recruited[0].vacancies === 3 && recruited[0].status === 'In progress' && recruited[0].department === 'Washing' && recruited[0].bucket_unit === 'RHL', JSON.stringify(recruited));
+  await page.goto(`${BASE}/requisitions`);
+  await page.getByRole('tab', { name: /^Requisitions/ }).click();
+
   await page.getByRole('button', { name: 'Create bucket' }).click();
   const bucketForm = page.getByRole('dialog', { name: 'New CV bucket' });
   await bucketForm.getByRole('button', { name: 'Create bucket' }).click();
   await page.getByRole('heading', { name: 'Jr. Executive' }).waitFor();
   check('CV bucket created from the requisition', true);
-  const bucketCode = (await supabase.db.query('select code from public.cv_buckets')).rows[0].code;
+  const bucketCode = (await supabase.db.query(`select code from public.cv_buckets where designation = 'Jr. Executive'`)).rows[0].code;
 
   // --- Scanned file, for checking OCR under the production CSP
   const scanBytes = await page.evaluate(async (faceBase64) => {

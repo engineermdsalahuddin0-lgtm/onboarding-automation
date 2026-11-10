@@ -9,7 +9,7 @@ import { BackendError, type Backend, type ListOptions, type PresenceEntry, type 
 
 const DB_NAME = 'bitopi-onboarding-demo';
 // Bump when the sample data's shape changes: browsers holding an older copy start again from fresh samples.
-const STATE_KEY = 'state-v9';
+const STATE_KEY = 'state-v10';
 
 type Row = Record<string, any>;
 type State = Record<string, Row[]> & { __secrets?: any };
@@ -207,7 +207,7 @@ function checkLock(row: Row, next: Row) {
 const REQUISITION_DEFAULTS: Partial<Requisition> = {
   designation_id: null, department: '', company: '', vacancies: 1, priority: 'Medium', employment_type: 'Permanent', location: '',
   hiring_manager: '', requested_by: '', budget_min: null, budget_max: null, target_date: null, status: 'Pending approval',
-  justification: '', job_description: '', filled_at: null, unit: '', section: '', subsection: '', vacancy_type: '', replacing: '',
+  justification: '', job_description: '', filled_at: null, unit: '', section: '', subsection: '', grade: '', vacancy_type: '', replacing: '',
   requisition_date: null, approved_on: null, offer_date: null, expected_joining: null, selected_names: '', remarks: '',
   sheet_key: null, sheet_data: {},
 };

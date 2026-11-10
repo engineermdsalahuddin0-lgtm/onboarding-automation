@@ -13,7 +13,13 @@ export interface OrgPlace {
  * Unit, then department, section and subsection, each offering only what sits under the choice before it.
  * Changing a level clears the levels under it that no longer fit.
  */
-export function OrgFields({ value, onChange, requireDepartment = false }: { value: OrgPlace; onChange: (value: OrgPlace) => void; requireDepartment?: boolean }) {
+export function OrgFields({ value, onChange, requireDepartment = false, requireUnit = false }: {
+  value: OrgPlace;
+  onChange: (value: OrgPlace) => void;
+  requireDepartment?: boolean;
+  /** For a new recruitment: a unit has to be chosen, and only the company's own list is offered. */
+  requireUnit?: boolean;
+}) {
   const { settings } = useStore();
   const structure = settings.org_structure ?? [];
   const units = [...new Set([...structure.map((u) => u.code), value.unit].filter(Boolean))];
@@ -30,8 +36,8 @@ export function OrgFields({ value, onChange, requireDepartment = false }: { valu
 
   return (
     <>
-      <Select label="Unit" value={value.unit} onChange={(e) => setUnit(e.target.value)} hint={units.length === 0 ? 'Add units under Settings > Units and departments.' : undefined}>
-        <option value="">Any unit</option>
+      <Select label="Unit" required={requireUnit} value={value.unit} onChange={(e) => setUnit(e.target.value)} hint={units.length === 0 ? 'Add units under Settings > Units and departments.' : undefined}>
+        <option value="">{requireUnit ? 'Choose…' : 'Any unit'}</option>
         {units.map((code) => {
           const name = structure.find((u) => u.code === code)?.name;
           return <option key={code} value={code}>{name && name !== code ? `${code} · ${name}` : code}</option>;

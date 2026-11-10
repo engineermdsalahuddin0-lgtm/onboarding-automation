@@ -867,4 +867,11 @@ describe('units and the vacancy sheet', () => {
     expect(again).toMatchObject({ id: first.id, status: 'Filled', unit: 'TAL', section: 'Finishing' });
     expect((await as(HR, `select count(*)::int as n from requisitions where sheet_key = 'vacancy-sheet:1'`))[0].n).toBe(1);
   });
+
+  it('keeps the grade of a new recruitment, blank when not given', async () => {
+    const [made] = await as(HR, `insert into requisitions (designation, unit, department, grade, company) values ('Executive', 'TAL', 'HR & Admin', 'MS-12', 'Bitopi Group') returning grade`);
+    expect(made.grade).toBe('MS-12');
+    const [plain] = await as(HR, `insert into requisitions (designation) values ('Incharge') returning grade`);
+    expect(plain.grade).toBe('');
+  });
 });

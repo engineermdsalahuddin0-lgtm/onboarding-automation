@@ -21,7 +21,7 @@ const STATUS_TONE: Record<RequisitionStatus, Tone> = {
  * be synced again every month: changed rows are updated, new rows added, and nothing is added twice.
  */
 export function VacancyImportDialog({ onClose }: { onClose: () => void }) {
-  const { requisitions, settings, isAdmin, syncRequisitions, saveSettings } = useStore();
+  const { requisitions, settings, syncRequisitions } = useStore();
   const toast = useToast();
   const input = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState('');
@@ -58,17 +58,9 @@ export function VacancyImportDialog({ onClose }: { onClose: () => void }) {
     if (!result) return;
     setBusy(true);
     try {
+      // The company's own list under Settings stays as it is: names only the sheet uses are kept on their rows.
       const saved = await syncRequisitions(result.rows.map((row) => row.requisition));
-      let structureNote = '';
-      if (result.added.length > 0) {
-        if (isAdmin) {
-          await saveSettings({ org_structure: result.structure });
-          structureNote = ` ${result.added.length} new unit, department or section names added under Settings.`;
-        } else {
-          structureNote = ' An admin can add the new department and section names under Settings.';
-        }
-      }
-      toast(`${saved} requisition${saved === 1 ? '' : 's'} synced from ${result.sheetName}.${structureNote}`);
+      toast(`${saved} requisition${saved === 1 ? '' : 's'} synced from ${result.sheetName}.`);
       onClose();
     } catch (failure) {
       toast(errorText(failure), 'bad');
@@ -139,10 +131,12 @@ export function VacancyImportDialog({ onClose }: { onClose: () => void }) {
             {result.added.length > 0 && (
               <details className="rounded-lg border border-line px-3 py-2">
                 <summary className="cursor-pointer font-medium">
-                  {result.added.length} unit, department or section name{result.added.length === 1 ? '' : 's'} not yet under Settings
-                  {isAdmin ? ', added when you sync' : ''}
+                  {result.added.length} unit, department or section name{result.added.length === 1 ? '' : 's'} not in your list under Settings
                 </summary>
-                {!isAdmin && <p className="mt-1 text-xs text-ink-soft">Only an admin can change Settings. The requisitions are still saved with these names.</p>}
+                <p className="mt-1 text-xs text-ink-soft">
+                  The requisitions keep these names as written, and the filters still find them. New recruitments choose from your list only.
+                  To use one of these names for new recruitments too, an admin adds it under Settings &gt; Units and departments.
+                </p>
                 <ul className="mt-1 list-disc pl-5 text-xs text-ink-soft">{result.added.map((name) => <li key={name}>{name}</li>)}</ul>
               </details>
             )}

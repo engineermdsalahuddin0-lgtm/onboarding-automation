@@ -1,4 +1,5 @@
 import type { OrgUnit, Requisition, RequisitionStatus } from '../types';
+import { gradeOf } from './designations';
 import { addToStructure, findDepartment, findSection, findUnit, nameKey } from './org';
 
 // Reads the company's vacancy status sheet ("NEW_Job vacancy Status _July 2026.xlsx", sheet VACANCY)
@@ -331,6 +332,7 @@ export function parseVacancySheet(
         department,
         section,
         subsection: '',
+        grade: gradeOf(position),
         company: '',
         vacancies: Math.max(1, Math.round(required ?? gap ?? 1)),
         priority: 'Medium',

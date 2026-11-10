@@ -217,6 +217,8 @@ alter table public.settings add column if not exists org_structure jsonb not nul
 alter table public.requisitions add column if not exists unit text not null default '';
 alter table public.requisitions add column if not exists section text not null default '';
 alter table public.requisitions add column if not exists subsection text not null default '';
+-- The designation's grade on the company chart (MS-1 to MS-13), set from the designation and not shown.
+alter table public.requisitions add column if not exists grade text not null default '';
 -- New, Replacement, or both; and for a replacement, who left (name and ID as written).
 alter table public.requisitions add column if not exists vacancy_type text not null default '';
 alter table public.requisitions add column if not exists replacing text not null default '';

@@ -1,13 +1,15 @@
-import { ClipboardList, Download, ExternalLink, Eye, FileSpreadsheet, FolderOpen, Megaphone, Pencil, Plus, Search, Trash2, UserRoundSearch } from 'lucide-react';
+import { ClipboardList, Download, ExternalLink, Eye, FileSpreadsheet, FolderOpen, FolderPlus, Megaphone, Pencil, Plus, Search, Trash2, UserRoundSearch } from 'lucide-react';
 import { useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { BucketFormDialog } from '../components/BucketForm';
 import { HelpTip } from '../components/Guide';
 import { OrgFields } from '../components/OrgFields';
 import { Button, Confirm, Dialog, EmptyState, errorText, IconButton, PageHeader, Select, StatusBadge, TABLE, Tabs, TD, TextArea, TextInput, TH, THEAD, useToast } from '../components/ui';
+import { NewRecruitmentDialog } from '../components/NewRecruitment';
 import { VacancyImportDialog } from '../components/VacancyImport';
 import { downloadXlsx, type ExportColumn } from '../lib/export';
 import { dateDmy, dateMedium, money, todayIso } from '../lib/format';
+import { DESIGNATIONS, gradeOf } from '../lib/designations';
 import { placeText } from '../lib/org';
 import { byNewest, daysToFill, isOpenRequisition, selectedNames } from '../lib/requisitions';
 import type { Tone } from '../lib/pipeline';
@@ -86,7 +88,8 @@ function RequisitionDialog({ requisition, fromDesignation, onClose }: { requisit
     department: requisition?.department ?? fromDesignation?.department ?? settings.departments[0] ?? '',
     section: requisition?.section ?? '',
     subsection: requisition?.subsection ?? '',
-    company: requisition?.company ?? fromDesignation?.company ?? settings.default_company,
+    // The company is always the group; an existing requisition keeps what it has.
+    company: requisition?.company ?? (fromDesignation?.company || settings.group_name),
     vacancy_type: requisition?.vacancy_type ?? '',
     replacing: requisition?.replacing ?? '',
     requisition_date: requisition?.requisition_date ?? (requisition ? '' : todayIso()),
@@ -118,6 +121,7 @@ function RequisitionDialog({ requisition, fromDesignation, onClose }: { requisit
       await saveRequisition({
         ...(requisition ? { id: requisition.id } : {}),
         ...form,
+        grade: gradeOf(form.designation),
         designation_id: designations.find((d) => d.title === form.designation)?.id ?? form.designation_id,
         vacancies: Number(form.vacancies),
         budget_min: form.budget_min ? Number(form.budget_min) : null,
@@ -145,10 +149,10 @@ function RequisitionDialog({ requisition, fromDesignation, onClose }: { requisit
       footer={<><Button onClick={onClose}>Cancel</Button><Button type="submit" form="requisition-form" variant="primary" loading={busy}>Save</Button></>}
     >
       <form id="requisition-form" onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
-        <TextInput label="Designation" required autoFocus list="designation-list" value={form.designation} onChange={(e) => set({ designation: e.target.value })} />
-        <datalist id="designation-list">{designations.map((d) => <option key={d.id} value={d.title} />)}</datalist>
-        <TextInput label="Company" list="req-company-options-2" value={form.company} onChange={(e) => set({ company: e.target.value })} />
-        <datalist id="req-company-options-2">{settings.companies.map((c) => <option key={c} value={c} />)}</datalist>
+        <div className="sm:col-span-2">
+          <TextInput label="Designation" required autoFocus list="designation-list" value={form.designation} onChange={(e) => set({ designation: e.target.value })} hint="Choose from the company's list, or type one that is not on it." />
+          <datalist id="designation-list">{[...new Set([...DESIGNATIONS.map((d) => d.title), ...designations.map((d) => d.title)])].map((title) => <option key={title} value={title} />)}</datalist>
+        </div>
         <OrgFields value={form} onChange={(place) => set(place)} />
         <Select label="New or replacement" value={form.vacancy_type} onChange={(e) => set({ vacancy_type: e.target.value })}>
           <option value="">Not stated</option>
@@ -424,7 +428,8 @@ export function RequisitionsPage() {
             <span data-tour="req-new" className="flex gap-2">
               {tab === 'vacancies' && <Button variant="primary" icon={Plus} onClick={() => setModal(<DesignationDialog onClose={close} />)}>Add designation</Button>}
               {tab === 'requisitions' && <Button icon={FileSpreadsheet} onClick={() => setModal(<VacancyImportDialog onClose={close} />)}>Sync vacancy sheet</Button>}
-              {tab === 'requisitions' && <Button variant="primary" icon={Plus} onClick={() => setModal(<RequisitionDialog onClose={close} />)}>New requisition</Button>}
+              {tab === 'requisitions' && <Button icon={Plus} onClick={() => setModal(<RequisitionDialog onClose={close} />)}>New requisition only</Button>}
+              {tab === 'requisitions' && <Button variant="primary" icon={FolderPlus} onClick={() => setModal(<NewRecruitmentDialog onClose={close} />)}>New recruitment</Button>}
               {tab === 'postings' && <Button variant="primary" icon={Plus} disabled={requisitions.length === 0} onClick={() => setModal(<PostingDialog onClose={close} />)}>Record job posting</Button>}
             </span>
           )

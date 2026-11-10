@@ -14,6 +14,7 @@ import type {
   Settings,
 } from '../../types';
 import { DEFAULT_DOCUMENT_TEMPLATES, DEFAULT_MESSAGE_TEMPLATES, DEFAULT_SETTINGS } from '../defaults';
+import { gradeOf } from '../designations';
 import { isoDate } from '../format';
 
 // Fictional sample data for demo mode only; it never reaches Supabase.
@@ -248,6 +249,7 @@ export function buildDemoData() {
     unit: 'CHO',
     section: des.department === 'HR & Admin' ? 'HR' : '',
     subsection: '',
+    grade: gradeOf(des.title),
     vacancy_type: ref % 2 === 0 ? 'Replacement' : 'New',
     replacing: ref % 2 === 0 ? 'Demo Former Employee' : '',
     requisition_date: daysFromNow(-createdDaysAgo),

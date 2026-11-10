@@ -30,7 +30,8 @@ export const TOURS: Record<TourId, { title: string; steps: TourStep[] }> = {
   buckets: {
     title: 'CV Buckets',
     steps: [
-      { target: 'buckets-new', title: 'One bucket per position', body: 'A CV bucket is a folder for one position, such as Jr. Executive. Create it here, or let a requisition create it.' },
+      { target: 'buckets-new', title: 'A new CV bucket', body: 'A bucket is a folder for one position. Choose the unit, department, section, designation and number of posts; its requisition is made at the same time.' },
+      { target: 'buckets-tree', title: 'Find buckets by place', body: 'Units, then departments, sections and subsections, with how many buckets each holds. Click one to show only its buckets; the filters above do the same.' },
       { target: 'buckets-list', title: 'Open a bucket', body: 'Each folder shows how many CVs it holds and where they stand. Click one to open its table. Inside, the chain icon copies the job application link to share on Facebook, BDJobs or WhatsApp.' },
     ],
   },

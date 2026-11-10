@@ -17,6 +17,7 @@ import type {
 } from '../types';
 import { backend, type TableName } from './backend';
 import { DEFAULT_DOCUMENT_TEMPLATES, DEFAULT_MESSAGE_TEMPLATES, DEFAULT_SETTINGS } from './defaults';
+import { DEFAULT_ORG_STRUCTURE } from './org';
 import { canProcessAs, canScreenAs } from './team';
 
 /** The latest notifications kept in memory; older ones stay in the database. */
@@ -194,8 +195,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     ]);
     const stored = settingsRows[0];
     setData({
-      // Settings saved before units existed have no structure yet.
-      settings: stored ? { ...stored, org_structure: stored.org_structure ?? [] } : EMPTY.settings,
+      // Until an admin saves a structure under Settings, the company's own is used, so units can be chosen from day one.
+      settings: stored ? { ...stored, org_structure: stored.org_structure?.length ? stored.org_structure : DEFAULT_ORG_STRUCTURE } : EMPTY.settings,
       messageTemplates,
       documentTemplates,
       designations,

@@ -42,6 +42,7 @@ alter table public.settings add column if not exists org_structure jsonb not nul
 alter table public.requisitions add column if not exists unit text not null default '';
 alter table public.requisitions add column if not exists section text not null default '';
 alter table public.requisitions add column if not exists subsection text not null default '';
+alter table public.requisitions add column if not exists grade text not null default '';
 alter table public.requisitions add column if not exists vacancy_type text not null default '';
 alter table public.requisitions add column if not exists replacing text not null default '';
 alter table public.requisitions add column if not exists requisition_date date;

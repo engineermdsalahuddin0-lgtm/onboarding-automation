@@ -1,11 +1,12 @@
-import { Archive, CalendarDays, Folder, FolderOpen, FolderPlus, Search, X } from 'lucide-react';
+import { Archive, CalendarDays, ChevronRight, Folder, FolderOpen, FolderPlus, FolderTree, Search, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { BucketFormDialog, FOLDER_COLORS } from '../components/BucketForm';
+import { FOLDER_COLORS } from '../components/BucketForm';
 import { HelpTip } from '../components/Guide';
+import { NewRecruitmentDialog } from '../components/NewRecruitment';
 import { Button, EmptyState, PageHeader, Select } from '../components/ui';
 import { classNames, dateMedium } from '../lib/format';
-import { placeText } from '../lib/org';
+import { nameKey, placeText } from '../lib/org';
 import { bucketStats, type BucketStats } from '../lib/pipeline';
 import { useStore } from '../lib/store';
 import type { CvBucket } from '../types';
@@ -63,20 +64,153 @@ function createdIn(bucket: CvBucket): { year: number; month: number } {
 }
 
 // The filters live in the link, so going into a bucket and back keeps them.
-const PARAM_DEFAULTS = { q: '', unit: '', department: '', year: '', month: '', sort: 'newest', group: 'month', show: 'active' };
+const PARAM_DEFAULTS = { q: '', unit: '', department: '', section: '', subsection: '', year: '', month: '', sort: 'newest', group: 'month', show: 'active' };
+
+/** Stands for "not set" in a place filter, e.g. buckets made before units existed. */
+const NONE = '(none)';
+const PLACE_LEVELS = ['unit', 'department', 'section', 'subsection'] as const;
+type PlaceLevel = (typeof PLACE_LEVELS)[number];
+type Place = Record<PlaceLevel, string>;
+
+/** Whether a bucket's value fits a place filter. Spelling differences ("QA,Audit" and "QA, Audit") do not matter. */
+function fits(value: string | undefined, filter: string): boolean {
+  if (!filter) return true;
+  if (filter === NONE) return !value?.trim();
+  return nameKey(value ?? '') === nameKey(filter);
+}
+
+const fitsPlace = (b: CvBucket, place: Place) => PLACE_LEVELS.every((level) => fits(b[level], place[level]));
+
+interface TreeNode {
+  /** The value the filter takes: the name, or NONE for buckets with nothing at this level. */
+  value: string;
+  label: string;
+  count: number;
+  children: TreeNode[];
+}
+
+/**
+ * Units, then departments, sections and subsections, with how many buckets sit under each. The company's units
+ * always show, even when empty; deeper levels show only where there are buckets.
+ */
+function buildTree(buckets: CvBucket[], unitCodes: string[]): TreeNode[] {
+  const grow = (items: CvBucket[], depth: number): TreeNode[] => {
+    const level = PLACE_LEVELS[depth];
+    if (!level) return [];
+    const groups = new Map<string, { label: string; items: CvBucket[] }>();
+    for (const b of items) {
+      const name = (b[level] ?? '').trim();
+      const key = name ? nameKey(name) : NONE;
+      const entry = groups.get(key) ?? { label: name, items: [] };
+      entry.items.push(b);
+      groups.set(key, entry);
+    }
+    // Below a unit, a level nobody filled in is not worth a node of its own; the parent already counts them.
+    if (depth > 0 && groups.size === 1 && groups.has(NONE)) return [];
+    return [...groups.entries()]
+      .map(([key, { label, items: inside }]) => ({
+        value: key === NONE ? NONE : label,
+        label: key === NONE ? `No ${level}` : label,
+        count: inside.length,
+        children: grow(inside, depth + 1),
+      }))
+      .sort((a, b) => Number(a.value === NONE) - Number(b.value === NONE) || a.label.localeCompare(b.label));
+  };
+  const units = grow(buckets, 0);
+  for (const code of unitCodes) {
+    if (!units.some((node) => nameKey(node.value) === nameKey(code))) units.push({ value: code, label: code, count: 0, children: [] });
+  }
+  // The company's units in their own order, then anything else.
+  const order = (node: TreeNode) => {
+    const index = unitCodes.findIndex((code) => nameKey(code) === nameKey(node.value));
+    return index === -1 ? unitCodes.length + (node.value === NONE ? 1 : 0) : index;
+  };
+  return units.sort((a, b) => order(a) - order(b) || a.label.localeCompare(b.label));
+}
+
+function PlaceTree({ nodes, total, place, onChoose }: { nodes: TreeNode[]; total: number; place: Place; onChoose: (place: Place) => void }) {
+  const chosen = PLACE_LEVELS.filter((level) => place[level]);
+  const row = (node: TreeNode, depth: number, path: Place) => {
+    const level = PLACE_LEVELS[depth];
+    const here: Place = { ...path, [level]: node.value };
+    // A node is open when it is on the chosen path: choosing a unit shows its departments, and so on down.
+    const onPath = PLACE_LEVELS.slice(0, depth + 1).every((l) => fits(here[l] === NONE ? '' : here[l], place[l]) && place[l] !== '');
+    const selected = onPath && chosen.length === depth + 1;
+    return (
+      <li key={`${level}-${node.value}`}>
+        <button
+          type="button"
+          onClick={() => onChoose(selected ? { ...path, ...Object.fromEntries(PLACE_LEVELS.slice(depth).map((l) => [l, ''])) } as Place : here)}
+          aria-current={selected ? 'true' : undefined}
+          aria-expanded={node.children.length > 0 ? onPath : undefined}
+          className={classNames(
+            'flex w-full items-center gap-1 rounded-md py-1 pr-2 text-left text-sm transition-colors hover:bg-hover',
+            selected ? 'bg-brand-50 font-semibold text-brand-900' : onPath ? 'font-medium text-ink' : 'text-ink-soft',
+            node.count === 0 && 'text-ink-muted',
+          )}
+          style={{ paddingLeft: `${0.25 + depth * 0.85}rem` }}
+        >
+          {node.children.length > 0
+            ? <ChevronRight className={classNames('size-3.5 shrink-0 transition-transform', onPath && 'rotate-90')} aria-hidden />
+            : <span className="size-3.5 shrink-0" aria-hidden />}
+          <span className={classNames('min-w-0 flex-1 truncate', node.value === NONE && 'italic')} title={node.label}>{node.label}</span>
+          <span className="tabular shrink-0 text-xs text-ink-muted">{node.count}</span>
+        </button>
+        {onPath && node.children.length > 0 && <ul>{node.children.map((child) => row(child, depth + 1, here))}</ul>}
+      </li>
+    );
+  };
+  return (
+    <nav aria-label="Buckets by unit and department" className="rounded-xl border border-line bg-surface p-2">
+      <button
+        type="button"
+        onClick={() => onChoose({ unit: '', department: '', section: '', subsection: '' })}
+        aria-current={chosen.length === 0 ? 'true' : undefined}
+        className={classNames('flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-left text-sm hover:bg-hover', chosen.length === 0 ? 'bg-brand-50 font-semibold text-brand-900' : 'text-ink')}
+      >
+        <FolderTree className="size-4 shrink-0" aria-hidden />
+        <span className="flex-1">All buckets</span>
+        <span className="tabular text-xs text-ink-muted">{total}</span>
+      </button>
+      <ul className="mt-1">{nodes.map((node) => row(node, 0, { unit: '', department: '', section: '', subsection: '' }))}</ul>
+    </nav>
+  );
+}
 
 export function BucketsPage() {
   const { buckets, candidates, settings, canWrite } = useStore();
   const [params, setParams] = useSearchParams();
   const param = (key: keyof typeof PARAM_DEFAULTS) => params.get(key) ?? PARAM_DEFAULTS[key];
-  const setParam = (key: keyof typeof PARAM_DEFAULTS, value: string) => setParams((current) => {
-    if (value === PARAM_DEFAULTS[key]) current.delete(key);
-    else current.set(key, value);
-    return current;
-  }, { replace: true });
+  // Every change starts from the address as it is right now, not as of the last render, so two quick choices
+  // (a unit, then at once a department) never undo each other.
+  const liveParams = () => new URLSearchParams(window.location.search);
+  const setParam = (key: keyof typeof PARAM_DEFAULTS, value: string) => {
+    const next = liveParams();
+    if (value === PARAM_DEFAULTS[key]) next.delete(key);
+    else next.set(key, value);
+    setParams(next, { replace: true });
+  };
   const query = param('q');
   const unit = param('unit');
   const department = param('department');
+  const section = param('section');
+  const subsection = param('subsection');
+  const place: Place = useMemo(() => ({ unit, department, section, subsection }), [unit, department, section, subsection]);
+  // Choosing a level clears the levels under it, in one step so the link changes once.
+  const updatePlace = (change: (now: Place) => Place) => {
+    const params = liveParams();
+    const next = change(Object.fromEntries(PLACE_LEVELS.map((level) => [level, params.get(level) ?? ''])) as Place);
+    for (const level of PLACE_LEVELS) {
+      if (next[level]) params.set(level, next[level]);
+      else params.delete(level);
+    }
+    setParams(params, { replace: true });
+  };
+  const choosePlace = (next: Place) => updatePlace(() => next);
+  const setLevel = (level: PlaceLevel, value: string) => {
+    const index = PLACE_LEVELS.indexOf(level);
+    updatePlace((now) => ({ ...now, ...Object.fromEntries(PLACE_LEVELS.slice(index).map((l) => [l, ''])), [level]: value }) as Place);
+  };
   const year = param('year');
   const month = param('month');
   const sort = param('sort') as SortKey;
@@ -97,17 +231,39 @@ export function BucketsPage() {
     return new Map(buckets.map((b) => [b.id, bucketStats(groups.get(b.id) ?? [])]));
   }, [buckets, candidates]);
 
-  const visible = useMemo(() => {
+  // Every filter but the place: what the tree counts, so its numbers answer "how many here, for this period".
+  const inPeriod = useMemo(() => {
     const text = query.trim().toLowerCase();
-    const list = buckets.filter((b) => {
+    return buckets.filter((b) => {
       const when = createdIn(b);
       return (status === 'Archived' ? b.status === 'Archived' : b.status !== 'Archived') &&
-        (!unit || b.unit === unit) &&
-        (!department || b.department === department) &&
         (!year || when.year === Number(year)) &&
         (month === '' || when.month === Number(month)) &&
         (!text || [b.designation, b.department, b.section, b.subsection, b.unit].some((value) => (value ?? '').toLowerCase().includes(text)));
     });
+  }, [buckets, query, year, month, status]);
+  const tree = useMemo(() => buildTree(inPeriod, (settings.org_structure ?? []).map((u) => u.code)), [inPeriod, settings.org_structure]);
+
+  // Each place filter offers what the buckets above it hold, so no choice leads to an empty page.
+  const optionsFor = (level: PlaceLevel) => {
+    const index = PLACE_LEVELS.indexOf(level);
+    const above = Object.fromEntries(PLACE_LEVELS.map((l, i) => [l, i < index ? place[l] : ''])) as Place;
+    const names = new Map<string, string>();
+    let missing = false;
+    for (const b of inPeriod) {
+      if (!fitsPlace(b, above)) continue;
+      const name = (b[level] ?? '').trim();
+      if (name) names.set(nameKey(name), names.get(nameKey(name)) ?? name);
+      else missing = true;
+    }
+    if (level === 'unit') for (const code of units) names.set(nameKey(code), names.get(nameKey(code)) ?? code);
+    const current = place[level];
+    if (current && current !== NONE && !names.has(nameKey(current))) names.set(nameKey(current), current);
+    return { names: [...names.values()].sort((a, b) => (level === 'unit' ? units.indexOf(a) - units.indexOf(b) : 0) || a.localeCompare(b)), missing: missing || current === NONE };
+  };
+
+  const visible = useMemo(() => {
+    const list = inPeriod.filter((b) => fitsPlace(b, place));
     const cvs = (b: CvBucket) => statsByBucket.get(b.id)?.total ?? 0;
     return [...list].sort((a, b) => {
       if (sort === 'name') return a.designation.localeCompare(b.designation);
@@ -115,7 +271,7 @@ export function BucketsPage() {
       const order = a.created_at < b.created_at ? -1 : 1;
       return sort === 'oldest' ? order : -order;
     });
-  }, [buckets, query, unit, department, year, month, status, sort, statsByBucket]);
+  }, [inPeriod, place, sort, statsByBucket]);
 
   // Folders grouped by the month or year they were created, so a period is easy to find. The groups run newest
   // first (oldest first when sorted that way); inside each, the chosen order holds.
@@ -132,7 +288,7 @@ export function BucketsPage() {
     }
     return [...result.values()].sort((a, b) => (sort === 'oldest' ? a.key.localeCompare(b.key) : b.key.localeCompare(a.key)));
   }, [visible, group, sort]);
-  const filtered = Boolean(query || unit || department || year || month !== '');
+  const filtered = Boolean(query || unit || department || section || subsection || year || month !== '');
 
   return (
     <>
@@ -145,28 +301,38 @@ export function BucketsPage() {
           </HelpTip>
         }
         description="One folder per position. Open a folder to see every CV and where it stands."
-        actions={canWrite && <Button data-tour="buckets-new" variant="primary" icon={FolderPlus} onClick={() => setCreating(true)}>New bucket</Button>}
+        actions={canWrite && <Button data-tour="buckets-new" variant="primary" icon={FolderPlus} onClick={() => setCreating(true)}>New CV bucket</Button>}
       />
 
-      <div className="mb-5 flex flex-wrap items-end gap-3">
+      <div className="mb-3 flex flex-wrap items-end gap-3">
         <div className="relative w-64">
           <Search className="pointer-events-none absolute top-2.5 left-3 size-4 text-ink-muted" aria-hidden />
           <input type="search" aria-label="Search buckets" placeholder="Search designation or section" value={query} onChange={(e) => setParam('q', e.target.value)} className="h-9 w-full rounded-lg border border-line-strong bg-surface pr-3 pl-9 text-sm" />
         </div>
-        {units.length > 0 && (
-          <div className="w-32">
-            <Select aria-label="Filter by unit" value={unit} onChange={(e) => setParam('unit', e.target.value)}>
-              <option value="">All units</option>
-              {units.map((code) => <option key={code}>{code}</option>)}
-            </Select>
-          </div>
-        )}
-        <div className="w-48">
-          <Select aria-label="Filter by department" value={department} onChange={(e) => setParam('department', e.target.value)}>
-            <option value="">All departments</option>
-            {[...new Set(buckets.filter((b) => !unit || b.unit === unit).map((b) => b.department).filter(Boolean))].sort().map((d) => <option key={d}>{d}</option>)}
-          </Select>
-        </div>
+        {PLACE_LEVELS.map((level) => {
+          const { names, missing } = optionsFor(level);
+          const above = PLACE_LEVELS.slice(0, PLACE_LEVELS.indexOf(level));
+          // Section and subsection wait for the level above them, as in the forms.
+          const waiting = level !== 'unit' && level !== 'department' && above.some((l) => !place[l]);
+          const label = level[0].toUpperCase() + level.slice(1);
+          return (
+            <div key={level} className={level === 'unit' ? 'w-28' : level === 'department' ? 'w-48' : 'w-44'}>
+              <Select
+                aria-label={`Filter by ${level}`}
+                title={waiting ? `Choose a ${PLACE_LEVELS[PLACE_LEVELS.indexOf(level) - 1]} first` : undefined}
+                value={place[level]}
+                disabled={waiting || (names.length === 0 && !missing)}
+                onChange={(e) => setLevel(level, e.target.value)}
+              >
+                <option value="">{waiting ? label : `All ${level === 'unit' ? 'units' : `${level}s`}`}</option>
+                {names.map((name) => <option key={name} value={name}>{name}</option>)}
+                {missing && <option value={NONE}>No {level}</option>}
+              </Select>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mb-5 flex flex-wrap items-end gap-3">
         <div className="w-28">
           <Select aria-label="Filter by year created" value={year} onChange={(e) => setParam('year', e.target.value)}>
             <option value="">All years</option>
@@ -200,30 +366,44 @@ export function BucketsPage() {
         </Button>
       </div>
 
-      {visible.length === 0 ? (
-        <EmptyState
-          icon={FolderOpen}
-          title={buckets.length === 0 ? 'No CV buckets yet' : 'No bucket matches this search'}
-          action={buckets.length === 0 && canWrite ? <Button variant="primary" icon={FolderPlus} onClick={() => setCreating(true)}>Create the first bucket</Button> : undefined}
-        >
-          {buckets.length === 0 && 'Create one for a position, or from a requisition, then upload its CVs.'}
-        </EmptyState>
-      ) : (
-        groups.map((entry, index) => (
-          <section key={entry.key} className="mb-6" data-tour={index === 0 ? 'buckets-list' : undefined}>
-            {entry.label && (
-              <h2 className="mb-2 text-xs font-semibold tracking-wide text-ink-muted uppercase">
-                {entry.label} <span className="font-normal normal-case">· {entry.items.length} bucket{entry.items.length === 1 ? '' : 's'}</span>
-              </h2>
-            )}
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {entry.items.map((bucket) => <BucketFolder key={bucket.id} bucket={bucket} stats={statsByBucket.get(bucket.id)!} />)}
-            </div>
-          </section>
-        ))
-      )}
+      <div className="grid gap-5 lg:grid-cols-[15rem_minmax(0,1fr)]">
+        <aside data-tour="buckets-tree" className="hidden lg:block">
+          <div className="sticky top-4 max-h-[calc(100dvh-2rem)] overflow-y-auto">
+            <PlaceTree nodes={tree} total={inPeriod.length} place={place} onChoose={choosePlace} />
+          </div>
+        </aside>
+        <div className="min-w-0">
+          {placeText(place) && (
+            <p className="mb-3 text-sm text-ink-soft">
+              Showing <strong className="text-ink">{placeText(Object.fromEntries(PLACE_LEVELS.map((l) => [l, place[l] === NONE ? `No ${l}` : place[l]])))}</strong>: {visible.length} bucket{visible.length === 1 ? '' : 's'}
+            </p>
+          )}
+          {visible.length === 0 ? (
+            <EmptyState
+              icon={FolderOpen}
+              title={buckets.length === 0 ? 'No CV buckets yet' : 'No bucket matches this search'}
+              action={buckets.length === 0 && canWrite ? <Button variant="primary" icon={FolderPlus} onClick={() => setCreating(true)}>Create the first bucket</Button> : undefined}
+            >
+              {buckets.length === 0 && 'New CV bucket makes the bucket and its requisition together. Then upload its CVs.'}
+            </EmptyState>
+          ) : (
+            groups.map((entry, index) => (
+              <section key={entry.key} className="mb-6" data-tour={index === 0 ? 'buckets-list' : undefined}>
+                {entry.label && (
+                  <h2 className="mb-2 text-xs font-semibold tracking-wide text-ink-muted uppercase">
+                    {entry.label} <span className="font-normal normal-case">· {entry.items.length} bucket{entry.items.length === 1 ? '' : 's'}</span>
+                  </h2>
+                )}
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {entry.items.map((bucket) => <BucketFolder key={bucket.id} bucket={bucket} stats={statsByBucket.get(bucket.id)!} />)}
+                </div>
+              </section>
+            ))
+          )}
+        </div>
+      </div>
 
-      {creating && <BucketFormDialog onClose={() => setCreating(false)} defaultDepartment={settings.departments[0]} />}
+      {creating && <NewRecruitmentDialog title="New CV bucket" onClose={() => setCreating(false)} />}
     </>
   );
 }
