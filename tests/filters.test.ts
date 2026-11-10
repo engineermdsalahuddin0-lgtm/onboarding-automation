@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalIndustry, parseCvText } from '../src/lib/cv/heuristics';
-import { candidateSalary, INDUSTRY_NOT_STATED, matchesFilters, NO_FILTERS, parseSalary, type CandidateFilters } from '../src/lib/filters';
+import { addressArea, candidateSalary, commonAreas, genderOf, INDUSTRY_NOT_STATED, matchesFilters, NO_FILTERS, NOT_STATED, parseSalary, type CandidateFilters } from '../src/lib/filters';
 import type { Candidate } from '../src/types';
 
 const person = (overrides: Partial<Candidate> = {}) =>
@@ -9,6 +9,8 @@ const person = (overrides: Partial<Candidate> = {}) =>
     phone: '01711234567',
     email: 'sara@example.com',
     address: '',
+    permanent_address: '',
+    gender: '',
     current_designation: 'HR Executive',
     current_company: 'Sample Apparels Ltd.',
     industry: 'Garments & Textile',
@@ -101,6 +103,50 @@ describe('matchesFilters', () => {
   it('searches the full CV text once it has loaded', () => {
     expect(matches(person(), { keyword: 'best employee' })).toBe(false);
     expect(matches(person(), { keyword: 'best employee' }, 'Awards: Best Employee 2020')).toBe(true);
+  });
+
+  it('filters by gender however the CV writes it, and finds those with none', () => {
+    expect(matches(person({ gender: 'Female' }), { gender: 'female' })).toBe(true);
+    expect(matches(person({ gender: 'F' }), { gender: 'female' })).toBe(true);
+    expect(matches(person({ gender: 'মহিলা' }), { gender: 'female' })).toBe(true);
+    expect(matches(person({ gender: 'Female' }), { gender: 'male' })).toBe(false);
+    expect(matches(person({ gender: 'male' }), { gender: 'male' })).toBe(true);
+    expect(matches(person({ gender: '' }), { gender: 'male' })).toBe(false);
+    expect(matches(person({ gender: '' }), { gender: NOT_STATED })).toBe(true);
+    expect(matches(person({ gender: 'Male' }), { gender: NOT_STATED })).toBe(false);
+  });
+
+  it('filters by present and permanent address separately, any of the places given', () => {
+    const c = person({ address: 'House 5, Uttara Sector 4, Dhaka-1230', permanent_address: 'Vill: Rampur, Dist: Gazipur' });
+    expect(matches(c, { presentAddress: 'uttara' })).toBe(true);
+    expect(matches(c, { presentAddress: 'Gazipur' })).toBe(false);
+    expect(matches(c, { permanentAddress: 'gazipur' })).toBe(true);
+    expect(matches(c, { presentAddress: 'Mirpur, Dhaka' })).toBe(true);
+    expect(matches(c, { presentAddress: 'Dhaka', permanentAddress: 'Comilla' })).toBe(false);
+    expect(matches(person({ address: '' }), { presentAddress: 'Dhaka' })).toBe(false);
+  });
+});
+
+describe('genderOf', () => {
+  it.each([
+    ['Male', 'male'], ['MALE', 'male'], ['M', 'male'], ['পুরুষ', 'male'],
+    ['Female', 'female'], ['female ', 'female'], ['F', 'female'], ['Woman', 'female'],
+    ['', ''], ['Prefer not to say', ''],
+  ])('%s', (text, expected) => {
+    expect(genderOf(text)).toBe(expected);
+  });
+});
+
+describe('address areas', () => {
+  it('reads the district an address ends with', () => {
+    expect(addressArea('House 5, Uttara Sector 4, Dhaka-1230')).toBe('Dhaka');
+    expect(addressArea('Vill: Rampur, PO: Kaliakair, Dist: Gazipur, Bangladesh')).toBe('Gazipur');
+    expect(addressArea('CHITTAGONG')).toBe('Chittagong');
+    expect(addressArea('')).toBe('');
+  });
+
+  it('lists the most common areas first', () => {
+    expect(commonAreas(['Mirpur, Dhaka', 'Uttara, dhaka', 'Tongi, Gazipur', ''])).toEqual(['Dhaka', 'Gazipur']);
   });
 });
 

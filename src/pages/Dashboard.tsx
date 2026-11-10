@@ -12,7 +12,7 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Avatar, Button, Card, EmptyState, HoverTooltip, InsightTile, PageHeader, RecommendationStars, Select, StatusBadge, TooltipList, TooltipTable, type TooltipRow, type TooltipTableRow } from '../components/ui';
 import { BarList, CountTable, DataTable, DetailDialog, Figures, InterviewCalendar, Section, type InterviewEvent } from '../components/DashboardDetails';
-import { classNames, dateTime, dayMonth, daysBetween, duration, isoDate, time12, todayIso, whenText } from '../lib/format';
+import { classNames, dateMedium, dateTime, dayMonth, daysBetween, duration, isoDate, time12, todayIso, whenText } from '../lib/format';
 import { placeText } from '../lib/org';
 import { afterFinal, bucketStats, CATEGORY_LABELS, fillsVacancy, isActive, isRejected, JOINING, joiningWhen, matchesStageFilter, nextAction, recommendationCount, stageOf, type StageFilter } from '../lib/pipeline';
 import { byNewest, daysOpen, isOpenRequisition, requisitionFigures } from '../lib/requisitions';
@@ -325,7 +325,7 @@ function buildWorkList(candidates: Candidate[], buckets: CvBucket[], only?: (key
 }
 
 const TEAM_COLUMNS: { label: string; hint: string; test: (c: Candidate) => boolean }[] = [
-  { label: 'To call', hint: 'Handed over, call not made or follow-up due', test: (c) => matchesStageFilter(c, 'calling') },
+  { label: 'Shortlisted & To call', hint: 'Handed over, call not made or follow-up due', test: (c) => matchesStageFilter(c, 'calling') },
   { label: 'Interviews', hint: 'Primary or final interview to schedule or hold', test: (c) => ['messaging', 'primary', 'secondary'].some((stage) => matchesStageFilter(c, stage as StageFilter)) },
   { label: 'Decision', hint: 'Passed the final interview, letter not sent yet', test: (c) => matchesStageFilter(c, 'decision') },
   { label: 'Confirmed', hint: 'Confirmation letter sent', test: (c) => c.final_decision === 'confirmed' && c.joining_status !== 'joined' && c.joining_status !== 'declined' },
@@ -488,7 +488,7 @@ export function DashboardPage() {
     ),
     [requisitions, buckets, candidates, department],
   );
-  const [detail, setDetail] = useState<null | 'requisitions' | 'cvs' | 'interviews' | 'review' | 'selected' | 'hire' | 'rating'>(null);
+  const [detail, setDetail] = useState<null | 'requisitions' | 'cvs' | 'interviews' | 'review' | 'selected' | 'shortlisted' | 'hire' | 'rating'>(null);
   const [requisitionShown, setRequisitionShown] = useState<string | null>(null);
   const navigate = useNavigate();
   const closeDetail = () => setDetail(null);
@@ -632,6 +632,17 @@ export function DashboardPage() {
     [scoped],
   );
   const recommendedPhotos = useFileUrls(recommended.slice(0, 9).map((c) => c.photo_path));
+  // Everyone the screening desk selected from their CV, whatever happened after, the latest handover first.
+  const shortlisted = useMemo(
+    () => scoped
+      .filter((c) => c.screening_status === 'shortlisted')
+      .sort((a, b) => (b.handed_over_at ?? b.received_at).localeCompare(a.handed_over_at ?? a.received_at)),
+    [scoped],
+  );
+  const shortlistedPhotos = useFileUrls(shortlisted.slice(0, 9).map((c) => c.photo_path));
+  const waitingForCall = shortlisted.filter((c) => c.call_status === 'pending' || c.call_status === 'followup');
+  const shortlistedConfirmed = shortlisted.filter((c) => c.final_decision === 'confirmed');
+  const shortlistedRejected = shortlisted.filter(isRejected);
   // One CV, one review: the average is per CV, however many sittings it took.
   const reviewedPeople = scoped.filter((c) => c.review_seconds > 0);
   const reviewSeconds = reviewedPeople.reduce((sum, c) => sum + c.review_seconds, 0);
@@ -899,6 +910,48 @@ export function DashboardPage() {
         <Card title="CVs per week"><Inflow items={inDepartment} positionOf={designationOf} /></Card>
       </div>
 
+      <Card
+        tour="dash-shortlisted"
+        title={`Shortlisted candidates (${shortlisted.length})`}
+        className="mt-4"
+        action={shortlisted.length > 0 ? <Button size="sm" variant="ghost" icon={UserCheck} onClick={() => setDetail('shortlisted')}>See all</Button> : undefined}
+      >
+        {shortlisted.length === 0 ? (
+          <p className="py-4 text-center text-sm text-ink-muted">No one shortlisted yet. Candidates you select at CV review appear here.</p>
+        ) : (
+          <>
+            <p className="mb-3 text-xs text-ink-soft">
+              {waitingForCall.length} waiting for the call · {shortlisted.length - waitingForCall.length - shortlistedConfirmed.length - shortlistedRejected.length} further in the process
+              {' '}· {shortlistedConfirmed.length} confirmed · {shortlistedRejected.length} rejected later
+            </p>
+            <ul className="grid grid-cols-1 gap-x-6 gap-y-2.5 sm:grid-cols-2 xl:grid-cols-3">
+              {shortlisted.slice(0, 9).map((c) => {
+                const stage = stageOf(c);
+                return (
+                  <li key={c.id}>
+                    <Link to={{ search: `?candidate=${c.id}` }} className="flex items-center gap-2.5 text-sm hover:underline">
+                      <Avatar name={c.full_name} url={c.photo_path ? shortlistedPhotos[c.photo_path] : null} size={30} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1 font-medium"><span className="truncate">{c.full_name}</span><RecommendationStars candidate={c} /></span>
+                        <span className="block truncate text-xs text-ink-muted">
+                          {designationOf(c)}{c.handed_over_at ? ` · Shortlisted ${dayMonth(c.handed_over_at)}` : ''}
+                        </span>
+                      </span>
+                      <StatusBadge tone={stage.tone}>{stage.label}</StatusBadge>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+            {shortlisted.length > 9 && (
+              <button type="button" className="mt-2 text-xs text-ink-muted underline hover:text-ink" onClick={() => setDetail('shortlisted')}>
+                and {shortlisted.length - 9} more
+              </button>
+            )}
+          </>
+        )}
+      </Card>
+
       <Card title="Recommended by interviewers" className="mt-4">
         {recommended.length === 0 ? (
           <p className="py-4 text-center text-sm text-ink-muted">No candidate has been recommended yet. Interviewers recommend candidates when their score is entered.</p>
@@ -1086,6 +1139,39 @@ export function DashboardPage() {
               />
             </Section>
           ))}
+        </DetailDialog>
+      )}
+
+      {detail === 'shortlisted' && (
+        <DetailDialog title="Shortlisted candidates" description="Everyone selected at CV review and handed to the process team, and where each one stands now." onClose={closeDetail}>
+          <Figures
+            items={[
+              { label: 'Shortlisted', value: shortlisted.length },
+              { label: 'Waiting for the call', value: waitingForCall.length, tone: waitingForCall.length ? 'warning' : undefined },
+              { label: 'Confirmed', value: shortlistedConfirmed.length },
+              { label: 'Rejected later', value: shortlistedRejected.length },
+            ]}
+          />
+          <Section title="By position">
+            <BarList rows={countRows(shortlisted.map(designationOf))} empty="No one shortlisted." />
+          </Section>
+          <Section title="Everyone shortlisted">
+            <DataTable
+              rows={shortlisted}
+              rowKey={(c) => c.id}
+              rowLabel={(c) => `Open ${c.full_name}`}
+              onRowClick={openCandidate}
+              empty="No one shortlisted."
+              columns={[
+                { label: 'Name', value: (c) => <span className="font-medium">{c.full_name}</span> },
+                { label: 'Position', value: designationOf },
+                { label: 'Mobile', value: (c) => <span className="tabular whitespace-nowrap">{c.phone || '-'}</span> },
+                { label: 'Shortlisted on', value: (c) => <span className="tabular whitespace-nowrap">{c.handed_over_at ? dateMedium(c.handed_over_at) : '-'}</span> },
+                { label: 'Handled by', value: (c) => handlerNames(c, team) },
+                { label: 'Stage', value: (c) => <StatusBadge tone={stageOf(c).tone}>{stageOf(c).label}</StatusBadge> },
+              ]}
+            />
+          </Section>
         </DetailDialog>
       )}
 

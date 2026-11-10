@@ -123,6 +123,14 @@ export function daysBetween(from: string | Date, to: string | Date): number {
   return Math.round((end - start) / 86_400_000);
 }
 
+/** Age in years with one decimal, as on job portals: 30.6. Null without a believable date of birth. */
+export function ageYears(dateOfBirth: string | null | undefined, now: Date = new Date()): number | null {
+  const born = toDate(dateOfBirth ?? null);
+  if (!born) return null;
+  const years = (now.getTime() - born.getTime()) / (365.25 * 86_400_000);
+  return years >= 14 && years < 90 ? Math.floor(years * 10) / 10 : null;
+}
+
 export function money(value: number | null | undefined): string {
   return value === null || value === undefined ? '' : value.toLocaleString('en-US');
 }

@@ -41,7 +41,7 @@ export const TOURS: Record<TourId, { title: string; steps: TourStep[] }> = {
       { target: 'bucket-link', title: 'Application link', body: 'Copies the job application link for this position. Applicants fill in the form, attach their CV, and appear here as New, without anyone uploading anything.' },
       { target: 'bucket-upload', title: 'Upload CVs', body: 'Adds CVs you received by email or on paper. Large uploads are read in batches; the limits are shown in the upload window.' },
       { target: 'bucket-tiles', title: 'Where candidates stand', body: 'Every candidate is in exactly one of these tiles. Click a tile to show only those people, for example New to screen the fresh CVs.' },
-      { target: 'bucket-filters', title: 'Filters', body: 'Narrow the list by a keyword anywhere in the CV, years of experience, expected salary or industry.' },
+      { target: 'bucket-filters', title: 'Filters', body: 'Narrow the list by a keyword anywhere in the CV, years of experience, expected salary, industry, gender, or present and permanent address. For an address, type an area or district; separate several with commas.' },
       { target: 'bucket-select', title: 'Several at once', body: 'Tick candidates to select and hand over, reject, or set an interview schedule for all of them in one go.' },
       { target: 'bucket-table', title: 'Open a candidate', body: 'Click any row to open the candidate\'s card. The card is where you accept or reject, and where every later step is done.' },
     ],

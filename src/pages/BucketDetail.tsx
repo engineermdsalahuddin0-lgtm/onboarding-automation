@@ -1,38 +1,39 @@
-import { AlertTriangle, ArrowLeft, Calendar, Check, Copy, Download, Link2, Pencil, Search, Trash2, Upload, Users, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, ArrowLeft, Briefcase, Calendar, Check, ChevronDown, Copy, Download, ExternalLink, FileText, House, Link2, Mail, MapPin, MessageSquare, Pencil, Phone, Search, Trash2, Upload, Users, X } from 'lucide-react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { BucketFormDialog } from '../components/BucketForm';
 import { DeleteBucketDialog } from '../components/DeleteBucketDialog';
 import { BulkUploadDialog } from '../components/BulkUpload';
 import { HelpTip } from '../components/Guide';
 import { HandoverDialog } from '../components/HandoverDialog';
-import { copyText, ScheduleDialog } from '../components/PipelineDialogs';
+import { copyText, ScheduleDialog, ScreeningRejectDialog } from '../components/PipelineDialogs';
 import { ProcessMini } from '../components/ProcessBar';
-import { ActionIcon, Avatar, Button, Confirm, EmptyState, errorText, HoverTooltip, PageHeader, RangeSlider, RecommendationStars, Select, SortHeader, StatusBadge, TABLE, TD, TH, THEAD, TooltipList, useToast } from '../components/ui';
+import { ActionIcon, Avatar, Button, Confirm, EmptyState, errorText, HoverTooltip, PageHeader, RangeSlider, RecommendationStars, Select, SortHeader, StatusBadge, TH, THEAD, TooltipList, useToast } from '../components/ui';
 import { backend } from '../lib/backend';
 import { downloadXlsx, type ExportColumn } from '../lib/export';
-import { candidateSalary, hasFilters, INDUSTRY_NOT_STATED, matchesFilters, NO_FILTERS, sliderBounds, usesExperienceFilter, usesSalaryFilter, type CandidateFilters } from '../lib/filters';
-import { classNames, dateMedium, duration, money, todayIso, whenText } from '../lib/format';
+import { candidateSalary, commonAreas, genderOf, hasFilters, INDUSTRY_NOT_STATED, matchesFilters, NO_FILTERS, NOT_STATED, sliderBounds, usesExperienceFilter, usesSalaryFilter, type CandidateFilters } from '../lib/filters';
+import { ageYears, classNames, dateMedium, duration, money, todayIso, whenText } from '../lib/format';
 import { placeText } from '../lib/org';
-import { bucketStats, can, CATEGORY_LABELS, isRejected, matchesStageFilter, nextAction, processPosition, recommendationCount, rejectScreening, shortlist, stageOf, type StageFilter } from '../lib/pipeline';
+import { bucketStats, can, CATEGORY_LABELS, isRejected, matchesStageFilter, nextAction, normalizePhone, processPosition, recommendationCount, rejectScreening, shortlist, stageOf, type StageFilter } from '../lib/pipeline';
 import { useFileUrls, useStore } from '../lib/store';
 import { handlerNames, processTeam } from '../lib/team';
-import type { Candidate } from '../types';
+import type { Candidate, Profile } from '../types';
 
 type SortColumn = 'name' | 'experience' | 'received' | 'stage' | 'review';
 
 type Modal =
   | { kind: 'schedule'; candidates: Candidate[]; stage: 'primary' | 'secondary' }
   | { kind: 'reject'; candidates: Candidate[] }
+  | { kind: 'rejectOne'; candidate: Candidate }
   | { kind: 'handover'; candidates: Candidate[] }
   | { kind: 'upload' }
   | { kind: 'edit' }
   | { kind: 'delete' };
 
-const STAGES: { value: StageFilter; label: string; help: string }[] = [
+const STAGES: { value: StageFilter; label: string; help: string; action?: string }[] = [
   { value: 'all', label: 'All', help: 'Everyone in this bucket. Click a row to open the candidate\'s card and move them to the next step.' },
   { value: 'new', label: 'New CVs', help: 'CVs not reviewed yet. Open one, read it, then select or reject.' },
-  { value: 'calling', label: 'To call', help: 'Selected from their CV, waiting for your phone call or a follow-up.' },
+  { value: 'calling', label: 'Shortlisted', action: 'To call', help: 'Shortlisted from their CV, waiting for your phone call or a follow-up.' },
   { value: 'messaging', label: 'To schedule', help: 'Confirmed on the call, waiting for a primary interview date and time.' },
   { value: 'primary', label: 'Primary', help: 'Primary interview scheduled, waiting for the result.' },
   { value: 'secondary', label: 'Final', help: 'Passed the primary interview: final schedule or result still to come.' },
@@ -49,6 +50,10 @@ const EXPORT_COLUMNS: ExportColumn<Candidate>[] = [
   { header: 'Current role', value: (c) => c.current_designation, width: 24 },
   { header: 'Current company', value: (c) => c.current_company, width: 24 },
   { header: 'Industry', value: (c) => c.industry, width: 20 },
+  { header: 'Gender', value: (c) => c.gender },
+  { header: 'Age', value: (c) => ageYears(c.date_of_birth) },
+  { header: 'Present address', value: (c) => c.address, width: 30 },
+  { header: 'Permanent address', value: (c) => c.permanent_address, width: 30 },
   { header: 'Expected salary', value: (c) => c.expected_salary, width: 18 },
   { header: 'Education', value: (c) => c.education.map((e) => e.degree).join('; '), width: 30 },
   { header: 'Source', value: (c) => c.source },
@@ -96,6 +101,226 @@ function RangeFilter({ label, bounds, step, from, to, format, onChange }: {
       format={format}
       onChange={(nextLow, nextHigh) => onChange(nextLow <= bounds.min ? '' : String(nextLow), nextHigh >= bounds.max ? '' : String(nextHigh))}
     />
+  );
+}
+
+/** A LinkedIn address as written on a CV, made into a link that opens. */
+const webLink = (text: string) => (/^https?:\/\//i.test(text.trim()) ? text.trim() : `https://${text.trim()}`);
+
+const GENDER_LABELS = { male: 'Male', female: 'Female' } as const;
+
+/** Skills stay folded away so the row keeps its height; one click shows them all. */
+function SkillsToggle({ skills }: { skills: string[] }) {
+  const [open, setOpen] = useState(false);
+  const listId = useId();
+  if (skills.length === 0) return null;
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={listId}
+        onClick={() => setOpen((value) => !value)}
+        className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline"
+      >
+        Skills & expertise ({skills.length})
+        <ChevronDown className={classNames('size-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
+      </button>
+      {open && (
+        <ul id={listId} className="mt-1.5 flex max-w-72 flex-wrap gap-1">
+          {skills.map((skill) => <li key={skill} className="rounded-full bg-hover px-2 py-0.5 text-[11px]">{skill}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// Each row is laid out as a card: a coloured strip with the photo and the figures HR compares at a glance,
+// then contact and address, education, experience, and where the candidate stands in the process.
+const CELL = 'border-y border-line bg-surface px-3 py-3 align-top transition-colors group-hover:bg-canvas';
+
+function CandidateRow({ c, index, photoUrl, selectable, selected, onToggle, onOpen, onScreen, otherApplications, team }: {
+  c: Candidate;
+  index: number;
+  photoUrl: string | null;
+  selectable: boolean;
+  selected: boolean;
+  onToggle: () => void;
+  onOpen: () => void;
+  /** Select or reject a new CV straight from the list. Only for the screening desk, and only while the CV is new. */
+  onScreen?: (decision: 'select' | 'reject') => void;
+  /** This person's applications to other positions, by the same mobile number. */
+  otherApplications: string[];
+  team: Profile[];
+}) {
+  const stage = stageOf(c);
+  const age = ageYears(c.date_of_birth);
+  const gender = genderOf(c.gender);
+  const education = c.education.filter((e) => e.degree || e.institution);
+  const jobs = c.experience.filter((e) => e.company || e.role);
+  const permanentDiffers = c.permanent_address.trim() !== '' && c.permanent_address.trim().toLowerCase() !== c.address.trim().toLowerCase();
+  return (
+    <tr
+      className={classNames('group cursor-pointer', selected && '[&>td:not(:first-child)]:bg-brand-50')}
+      onClick={(event) => {
+        if (!(event.target as Element).closest('a,button,input,label')) onOpen();
+      }}
+    >
+      <td className="w-32 rounded-l-xl bg-brand-700 px-2.5 py-2.5 align-top text-white">
+        <div className="flex flex-col items-center gap-1 text-center text-xs">
+          <div className="flex w-full items-center justify-between">
+            <span className="tabular rounded bg-white/15 px-1.5 text-[11px] font-semibold">{index + 1}</span>
+            {selectable && (
+              <input
+                type="checkbox"
+                aria-label={`Select ${c.full_name}`}
+                className="size-4 accent-brand-300"
+                checked={selected}
+                onChange={onToggle}
+              />
+            )}
+          </div>
+          <span className="rounded-full ring-2 ring-white/70"><Avatar name={c.full_name} url={photoUrl} size={64} /></span>
+          <span className="tabular mt-1 inline-flex items-center gap-1 font-medium" title="Received"><Calendar className="size-3" aria-hidden />{dateMedium(c.received_at)}</span>
+          {(age !== null || gender) && (
+            <span className="tabular">{[age !== null ? `Age: ${age}` : '', gender ? GENDER_LABELS[gender] : ''].filter(Boolean).join(' · ')}</span>
+          )}
+          {c.expected_salary && (
+            <span className="mt-0.5 block w-full">
+              <span className="block text-[11px] text-white/80">Expected</span>
+              <span className="tabular block truncate font-semibold" title={c.expected_salary}>{c.expected_salary}</span>
+            </span>
+          )}
+          {c.present_salary && (
+            <span className="block w-full">
+              <span className="block text-[11px] text-white/80">Current</span>
+              <span className="tabular block truncate font-semibold" title={c.present_salary}>{c.present_salary}</span>
+            </span>
+          )}
+        </div>
+      </td>
+
+      <td className={classNames(CELL, 'min-w-60 rounded-r-xl border-r sm:rounded-r-none sm:border-r-0')}>
+        <button type="button" onClick={onOpen} className="flex items-center gap-1.5 text-left text-base font-semibold text-brand-700 hover:underline">
+          {c.full_name}
+          {c.parse_warnings.length > 0 && <AlertTriangle className="size-3.5 shrink-0 text-amber-700" aria-label="Details to check" />}
+          <RecommendationStars candidate={c} />
+        </button>
+        {(c.current_designation || c.current_company) && (
+          <p className="truncate text-xs text-ink-muted md:hidden">{[c.current_designation, c.current_company].filter(Boolean).join(', ')}</p>
+        )}
+        <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <Phone className="size-3.5 shrink-0 text-brand-700" aria-hidden />
+          {c.phone ? <a href={`tel:${c.phone}`} className="tabular font-medium text-brand-700 hover:underline">{c.phone}</a> : <span className="text-ink-muted">Missing</span>}
+          {c.phone && (
+            <a href={`sms:${c.phone}`} aria-label={`Send an SMS to ${c.full_name}`} title="Send an SMS" className="rounded border border-line p-0.5 text-ink-soft hover:bg-hover">
+              <MessageSquare className="size-3.5" aria-hidden />
+            </a>
+          )}
+          {c.email && (
+            <a href={`mailto:${c.email}`} aria-label={`Email ${c.full_name}`} title={c.email} className="rounded border border-line p-0.5 text-ink-soft hover:bg-hover">
+              <Mail className="size-3.5" aria-hidden />
+            </a>
+          )}
+        </p>
+        {c.address && (
+          <p className="mt-1 flex items-start gap-1.5 text-ink-soft" title={`Present address: ${c.address}`}>
+            <MapPin className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            <span className="line-clamp-2 max-w-72"><span className="sr-only">Present address: </span>{c.address}</span>
+          </p>
+        )}
+        {permanentDiffers && (
+          <p className="mt-0.5 flex items-start gap-1.5 text-xs text-ink-muted" title={`Permanent address: ${c.permanent_address}`}>
+            <House className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            <span className="line-clamp-1 max-w-72">Permanent: {c.permanent_address}</span>
+          </p>
+        )}
+        {otherApplications.length > 0 && (
+          <p className="mt-1.5 text-sm text-brand-700" title={`Also applied for: ${otherApplications.join(', ')}`}>
+            Applied {otherApplications.length + 1} times
+          </p>
+        )}
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="rounded bg-hover px-1.5 py-0.5 text-ink-soft">{c.source}</span>
+          {c.linkedin && (
+            <a href={webLink(c.linkedin)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-[#0a66c2] hover:bg-hover">
+              LinkedIn <ExternalLink className="size-3" aria-hidden />
+            </a>
+          )}
+          {c.cv_path && <span className="inline-flex items-center gap-1 text-ink-muted" title="The original CV is on the card"><FileText className="size-3.5 text-red-700" aria-hidden />CV</span>}
+        </div>
+        {onScreen && c.screening_status === 'new' && (
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="primary" icon={Check} aria-label={`Select ${c.full_name} and hand over`} title="Accept the CV and hand it to the process team" onClick={() => onScreen('select')}>
+              Select
+            </Button>
+            <Button size="sm" variant="danger" icon={X} aria-label={`Reject ${c.full_name}`} title="Reject at CV review, with the reason" onClick={() => onScreen('reject')}>
+              Reject
+            </Button>
+          </div>
+        )}
+        {/* On a phone there is no room for a Process column, so it sits under the name. */}
+        <div className="mt-2 flex flex-col items-start gap-1 sm:hidden">
+          <StatusBadge tone={stage.tone}>{stage.label}</StatusBadge>
+          <span className="tabular text-xs text-ink-muted">{nextAction(c)}</span>
+        </div>
+      </td>
+
+      <td className={classNames(CELL, 'hidden w-56 lg:table-cell')}>
+        {education.length === 0 ? (
+          <span className="text-ink-muted">Education not stated</span>
+        ) : (
+          <>
+            <p className="font-semibold">{education[0].degree}</p>
+            {education[0].institution && <p className="text-ink-soft">{education[0].institution}</p>}
+            {(education[0].result || education[0].year) && (
+              <p className="text-xs text-ink-muted">{[education[0].result, education[0].year].filter(Boolean).join(' · ')}</p>
+            )}
+            {education.length > 1 && (
+              <p className="mt-1 text-xs text-ink-muted" title={education.slice(1).map((e) => e.degree).join(', ')}>+{education.length - 1} more</p>
+            )}
+          </>
+        )}
+      </td>
+
+      <td className={classNames(CELL, 'hidden w-64 md:table-cell')}>
+        <p className="tabular flex items-center gap-1.5 font-medium">
+          <Briefcase className="size-3.5 shrink-0" aria-hidden />
+          {c.total_experience_years === null ? <span className="font-normal text-ink-muted">Experience not stated</span> : `${c.total_experience_years} year${c.total_experience_years === 1 ? '' : 's'}`}
+        </p>
+        {jobs.length > 0 ? (
+          <ul className="mt-1.5 space-y-1.5">
+            {jobs.slice(0, 2).map((job, jobIndex) => (
+              <li key={jobIndex}>
+                {job.company && <p className="font-semibold">{job.company}</p>}
+                <p className="text-ink-soft">{job.role}{job.duration ? <span className="text-xs text-ink-muted"> ({job.duration})</span> : null}</p>
+              </li>
+            ))}
+            {jobs.length > 2 && <li className="text-xs text-ink-muted">+{jobs.length - 2} more</li>}
+          </ul>
+        ) : (c.current_designation || c.current_company) && (
+          <div className="mt-1.5">
+            {c.current_company && <p className="font-semibold">{c.current_company}</p>}
+            {c.current_designation && <p className="text-ink-soft">{c.current_designation}</p>}
+          </div>
+        )}
+        {c.industry && <p className="mt-1.5 text-xs text-ink-muted">Industry: {c.industry}</p>}
+        <SkillsToggle skills={c.skills} />
+      </td>
+
+      <td className={classNames(CELL, 'hidden w-52 sm:table-cell sm:rounded-r-xl sm:border-r lg:rounded-r-none lg:border-r-0')}>
+        <div className="flex flex-col items-start gap-1">
+          <StatusBadge tone={stage.tone}>{stage.label}</StatusBadge>
+          <ProcessMini candidate={c} />
+          <span className="tabular text-xs text-ink-muted">{nextAction(c)}</span>
+          {c.screening_status === 'shortlisted' && <span className="text-[11px] text-ink-muted">With {handlerNames(c, team)}</span>}
+        </div>
+      </td>
+
+      <td className={classNames(CELL, 'tabular hidden w-24 rounded-r-xl border-r whitespace-nowrap lg:table-cell')}>
+        {c.review_seconds > 0 ? duration(c.review_seconds) : <span className="text-ink-muted">-</span>}
+      </td>
+    </tr>
   );
 }
 
@@ -175,6 +400,26 @@ export function BucketDetailPage() {
   }, [inStage, filters, fullTexts, sort]);
 
   const industries = useMemo(() => [...new Set(items.map((c) => c.industry).filter(Boolean))].sort(), [items]);
+  const presentAreas = useMemo(() => commonAreas(items.map((c) => c.address)), [items]);
+  const permanentAreas = useMemo(() => commonAreas(items.map((c) => c.permanent_address)), [items]);
+  // The same mobile number in other buckets is the same person applying again, as job portals count it.
+  const designationsByPhone = useMemo(() => {
+    const bucketNames = new Map(buckets.map((b) => [b.id, b.designation]));
+    const byPhone = new Map<string, { bucketId: string; designation: string }[]>();
+    for (const c of candidates) {
+      const phone = normalizePhone(c.phone);
+      if (phone.length < 10) continue;
+      const list = byPhone.get(phone) ?? [];
+      list.push({ bucketId: c.bucket_id, designation: bucketNames.get(c.bucket_id) ?? 'another position' });
+      byPhone.set(phone, list);
+    }
+    return byPhone;
+  }, [candidates, buckets]);
+  const otherApplications = (c: Candidate) => {
+    const phone = normalizePhone(c.phone);
+    if (phone.length < 10) return [];
+    return (designationsByPhone.get(phone) ?? []).filter((entry) => entry.bucketId !== c.bucket_id).map((entry) => entry.designation);
+  };
   const experienceBounds = useMemo(
     () => sliderBounds(items.map((c) => c.total_experience_years).filter((years): years is number => years !== null).concat(0), 1, { min: 0, max: 20 }),
     [items],
@@ -187,6 +432,9 @@ export function BucketDetailPage() {
   const notStated = [
     usesExperienceFilter(filters) && inStage.some((c) => c.total_experience_years === null) && `${inStage.filter((c) => c.total_experience_years === null).length} with no experience on record`,
     usesSalaryFilter(filters) && inStage.some((c) => !candidateSalary(c)) && `${inStage.filter((c) => !candidateSalary(c)).length} with no salary on record`,
+    filters.gender !== '' && filters.gender !== NOT_STATED && inStage.some((c) => !genderOf(c.gender)) && `${inStage.filter((c) => !genderOf(c.gender)).length} with no gender on record`,
+    filters.presentAddress.trim() !== '' && inStage.some((c) => !c.address.trim()) && `${inStage.filter((c) => !c.address.trim()).length} with no present address on record`,
+    filters.permanentAddress.trim() !== '' && inStage.some((c) => !c.permanent_address.trim()) && `${inStage.filter((c) => !c.permanent_address.trim()).length} with no permanent address on record`,
   ].filter(Boolean);
 
   const urls = useFileUrls(visible.slice(0, 300).map((c) => c.photo_path));
@@ -250,7 +498,7 @@ export function BucketDetailPage() {
       />
 
       <div data-tour="bucket-tiles" role="tablist" aria-label="Where candidates stand" className="grid grid-cols-[repeat(auto-fit,minmax(5.75rem,1fr))] gap-2">
-        {STAGES.map(({ value, label }) => (
+        {STAGES.map(({ value, label, action }) => (
           <button
             key={value}
             type="button"
@@ -263,7 +511,10 @@ export function BucketDetailPage() {
             )}
           >
             <span className="block truncate text-xs font-medium text-ink-muted">{label}</span>
-            <span className="tabular block text-xl font-semibold tracking-tight">{counts[value]}</span>
+            <span className="flex items-baseline justify-between gap-1.5">
+              <span className="tabular text-xl font-semibold tracking-tight">{counts[value]}</span>
+              {action && <span className="truncate text-[10px] font-medium text-ink-muted">Action: {action}</span>}
+            </span>
           </button>
         ))}
       </div>
@@ -360,6 +611,35 @@ export function BucketDetailPage() {
             <option value={INDUSTRY_NOT_STATED}>Not stated</option>
           </Select>
         </div>
+        <div className="w-full sm:w-32">
+          <Select aria-label="Gender" value={filters.gender} onChange={(e) => setFilterValue({ gender: e.target.value })} className="h-8! px-2! text-xs!">
+            <option value="">Male & female</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value={NOT_STATED}>Not stated</option>
+          </Select>
+        </div>
+        {([
+          ['presentAddress', 'Present address', presentAreas, MapPin],
+          ['permanentAddress', 'Permanent address', permanentAreas, House],
+        ] as const).map(([key, label, areas, Icon]) => (
+          <div key={key} className="relative w-full sm:w-48">
+            <Icon className="pointer-events-none absolute top-2 left-2.5 size-4 text-ink-muted" aria-hidden />
+            <input
+              type="search"
+              aria-label={label}
+              title={`${label}: type an area or district. Separate several with commas to show people from any of them.`}
+              placeholder={label}
+              list={`${key}-areas`}
+              value={filters[key]}
+              onChange={(e) => setFilterValue({ [key]: e.target.value })}
+              className="h-8 w-full rounded-lg border border-line-strong bg-surface pr-2 pl-8 text-xs placeholder:text-ink-muted"
+            />
+            <datalist id={`${key}-areas`}>
+              {areas.map((area) => <option key={area} value={area} />)}
+            </datalist>
+          </div>
+        ))}
       </div>
 
       <div className="mt-2 flex min-h-8 flex-wrap items-center gap-3">
@@ -378,7 +658,7 @@ export function BucketDetailPage() {
                 icon={Check}
                 onClick={() => (hasProcessTeam
                   ? setModal({ kind: 'handover', candidates: canShortlist })
-                  : void bulk(canShortlist, () => shortlist({ by: user?.full_name || user?.email || '' }), 'moved to To call'))}
+                  : void bulk(canShortlist, () => shortlist({ by: user?.full_name || user?.email || '' }), 'shortlisted'))}
               >
                 Select and hand over {canShortlist.length}
               </Button>
@@ -391,109 +671,66 @@ export function BucketDetailPage() {
         )}
       </div>
 
-      <div data-tour="bucket-table" className="relative mt-3 overflow-x-auto rounded-xl border border-line bg-surface">
+      <div data-tour="bucket-table" className="relative mt-3 overflow-x-auto">
         {visible.length === 0 ? (
-          <EmptyState icon={Users} title={items.length === 0 ? 'No CVs in this bucket yet' : 'No candidate matches this view'} action={items.length === 0 && canScreen ? <Button variant="primary" icon={Upload} onClick={() => setModal({ kind: 'upload' })}>Upload CVs</Button> : undefined}>
-            {items.length === 0 && 'Upload CVs here, or share the application link above.'}
-          </EmptyState>
+          <div className="rounded-xl border border-line bg-surface">
+            <EmptyState icon={Users} title={items.length === 0 ? 'No CVs in this bucket yet' : 'No candidate matches this view'} action={items.length === 0 && canScreen ? <Button variant="primary" icon={Upload} onClick={() => setModal({ kind: 'upload' })}>Upload CVs</Button> : undefined}>
+              {items.length === 0 && 'Upload CVs here, or share the application link above.'}
+            </EmptyState>
+          </div>
         ) : (
-          <table className={TABLE}>
+          <table className="w-full border-separate border-spacing-y-2 text-sm">
             <thead className={THEAD}>
               <tr>
-                {canWrite && (
-                  <th scope="col" className={TH} data-tour="bucket-select">
-                    <input
-                      type="checkbox"
-                      aria-label="Select all shown candidates"
-                      className="size-4 accent-brand-600"
-                      checked={allSelected}
-                      onChange={() => setSelection(allSelected ? new Set() : new Set(visible.map((c) => c.id)))}
-                    />
-                  </th>
-                )}
+                <th scope="col" className={classNames(TH, 'rounded-l-lg')} data-tour="bucket-select" aria-sort={sort.column === 'received' ? (sort.ascending ? 'ascending' : 'descending') : undefined}>
+                  <span className="flex items-center gap-2">
+                    {canWrite && (
+                      <input
+                        type="checkbox"
+                        aria-label="Select all shown candidates"
+                        className="size-4 accent-brand-600"
+                        checked={allSelected}
+                        onChange={() => setSelection(allSelected ? new Set() : new Set(visible.map((c) => c.id)))}
+                      />
+                    )}
+                    <button type="button" onClick={() => onSort('received')} className={classNames('inline-flex items-center gap-1 hover:text-ink', sort.column === 'received' && 'text-ink')}>
+                      Received
+                      <span aria-hidden className={sort.column === 'received' ? '' : 'invisible'}>{sort.ascending ? '↑' : '↓'}</span>
+                    </button>
+                  </span>
+                </th>
                 <SortHeader column="name" label="Candidate" sort={sort} onSort={onSort} />
-                <th scope="col" className={`${TH} hidden md:table-cell`}>Mobile</th>
-                <SortHeader column="experience" label="Exp., education" sort={sort} onSort={onSort} className="hidden md:table-cell" />
-                <th scope="col" className={`${TH} hidden lg:table-cell`}>Industry, salary</th>
-                <SortHeader column="received" label="Received" sort={sort} onSort={onSort} className="hidden xl:table-cell" />
+                <th scope="col" className={`${TH} hidden lg:table-cell`}>Education</th>
+                <SortHeader column="experience" label="Experience" sort={sort} onSort={onSort} className="hidden md:table-cell" />
                 <SortHeader column="stage" label="Process" sort={sort} onSort={onSort} className="hidden sm:table-cell" />
-                <SortHeader column="review" label="Review time" sort={sort} onSort={onSort} className="hidden lg:table-cell" />
+                <SortHeader column="review" label="Review time" sort={sort} onSort={onSort} className="hidden rounded-r-lg lg:table-cell" />
               </tr>
             </thead>
             <tbody>
-              {visible.map((c) => {
-                const stage = stageOf(c);
-                return (
-                  <tr
-                    key={c.id}
-                    className="cursor-pointer hover:bg-canvas"
-                    onClick={(event) => {
-                      if (!(event.target as Element).closest('a,button,input,label')) openCard(c.id);
-                    }}
-                  >
-                    {canWrite && (
-                      <td className={TD}>
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${c.full_name}`}
-                          className="size-4 accent-brand-600"
-                          checked={selection.has(c.id)}
-                          onChange={() => setSelection((current) => {
-                            const next = new Set(current);
-                            if (next.has(c.id)) next.delete(c.id);
-                            else next.add(c.id);
-                            return next;
-                          })}
-                        />
-                      </td>
-                    )}
-                    <td className={TD}>
-                      <button type="button" onClick={() => openCard(c.id)} className="flex items-center gap-2.5 text-left">
-                        <Avatar name={c.full_name} url={c.photo_path ? urls[c.photo_path] : null} />
-                        <span className="min-w-0">
-                          <span className="flex items-center gap-1 font-medium hover:underline">
-                            {c.full_name}
-                            {c.parse_warnings.length > 0 && <AlertTriangle className="size-3.5 text-amber-700" aria-label="Details to check" />}
-                            <RecommendationStars candidate={c} />
-                          </span>
-                          <span className="block max-w-56 truncate text-xs text-ink-muted">{c.current_designation || c.email}</span>
-                        </span>
-                      </button>
-                      {/* On a phone there is no room for a Process column, so it sits under the name. */}
-                      <div className="mt-1.5 flex flex-col items-start gap-1 sm:hidden">
-                        <StatusBadge tone={stage.tone}>{stage.label}</StatusBadge>
-                        <span className="tabular text-xs text-ink-muted">{nextAction(c)}</span>
-                      </div>
-                    </td>
-                    <td className={`${TD} tabular hidden whitespace-nowrap md:table-cell`}>{c.phone ? <a href={`tel:${c.phone}`} className="hover:underline">{c.phone}</a> : <span className="text-ink-muted">Missing</span>}</td>
-                    <td className={`${TD} hidden max-w-36 md:table-cell`}>
-                      <span className="tabular block">{c.total_experience_years === null ? '-' : `${c.total_experience_years} yr${c.total_experience_years === 1 ? '' : 's'}`}</span>
-                      <span className="block truncate text-xs text-ink-muted" title={c.education.map((e) => e.degree).join(', ')}>{c.education[0]?.degree}</span>
-                    </td>
-                    <td className={`${TD} hidden max-w-40 lg:table-cell`}>
-                      <span className="block truncate" title={c.industry}>{c.industry || '-'}</span>
-                      <span className="block truncate text-xs text-ink-muted" title={c.expected_salary}>{c.expected_salary}</span>
-                    </td>
-                    <td className={`${TD} hidden whitespace-nowrap xl:table-cell`}>
-                      <span className="tabular block">{dateMedium(c.received_at)}</span>
-                      <span className="block text-xs text-ink-muted">{c.source}</span>
-                    </td>
-                    <td className={`${TD} hidden sm:table-cell`}>
-                      <div className="flex flex-col items-start gap-1">
-                        <StatusBadge tone={stage.tone}>{stage.label}</StatusBadge>
-                        <div className="flex flex-wrap items-center gap-x-2">
-                          <ProcessMini candidate={c} />
-                          <span className="tabular text-xs text-ink-muted">{nextAction(c)}</span>
-                        </div>
-                        {c.screening_status === 'shortlisted' && <span className="text-[11px] text-ink-muted">With {handlerNames(c, team)}</span>}
-                      </div>
-                    </td>
-                    <td className={`${TD} tabular hidden whitespace-nowrap lg:table-cell`}>
-                      {c.review_seconds > 0 ? duration(c.review_seconds) : <span className="text-ink-muted">-</span>}
-                    </td>
-                  </tr>
-                );
-              })}
+              {visible.map((c, index) => (
+                <CandidateRow
+                  key={c.id}
+                  c={c}
+                  index={index}
+                  photoUrl={c.photo_path ? urls[c.photo_path] ?? null : null}
+                  selectable={canWrite}
+                  selected={selection.has(c.id)}
+                  onToggle={() => setSelection((current) => {
+                    const next = new Set(current);
+                    if (next.has(c.id)) next.delete(c.id);
+                    else next.add(c.id);
+                    return next;
+                  })}
+                  onOpen={() => openCard(c.id)}
+                  onScreen={canScreen ? (decision) => {
+                    if (decision === 'reject') setModal({ kind: 'rejectOne', candidate: c });
+                    else if (hasProcessTeam) setModal({ kind: 'handover', candidates: [c] });
+                    else void bulk([c], () => shortlist({ by: user?.full_name || user?.email || '' }), 'shortlisted');
+                  } : undefined}
+                  otherApplications={otherApplications(c)}
+                  team={team}
+                />
+              ))}
             </tbody>
           </table>
         )}
@@ -513,6 +750,7 @@ export function BucketDetailPage() {
           }}
         />
       )}
+      {modal?.kind === 'rejectOne' && <ScreeningRejectDialog candidate={modal.candidate} onClose={() => setModal(null)} />}
       {modal?.kind === 'handover' && <HandoverDialog candidates={modal.candidates} mode="select" onClose={() => setModal(null)} onDone={() => setSelection(new Set())} />}
       {modal?.kind === 'upload' && <BulkUploadDialog bucketId={bucket.id} onClose={() => setModal(null)} />}
       {modal?.kind === 'edit' && <BucketFormDialog bucket={bucket} onClose={() => setModal(null)} />}

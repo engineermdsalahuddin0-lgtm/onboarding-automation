@@ -328,8 +328,13 @@ async function main() {
   if (tipStillThere) {
     // Whatever row is now under the pointer may answer; the tooltip must sit beside that row, not the old one.
     const tipBox = await visibleTip().boundingBox();
-    const owner = await visibleTip().evaluate((tip) => tip.parentElement.getBoundingClientRect().top);
-    check('A tooltip never floats away from its bar on scroll', Math.abs(tipBox.y - owner) < 2, `tip ${Math.round(tipBox.y)}, row ${Math.round(owner)}`);
+    // Beside a row it lines up with the row's top, or with its bottom when the row is near the foot of the screen.
+    const owner = await visibleTip().evaluate((tip) => {
+      const { top, bottom } = tip.parentElement.getBoundingClientRect();
+      return { top, bottom };
+    });
+    const besideRow = Math.abs(tipBox.y - owner.top) < 2 || Math.abs(tipBox.y + tipBox.height - owner.bottom) < 2;
+    check('A tooltip never floats away from its bar on scroll', besideRow, `tip ${Math.round(tipBox.y)}-${Math.round(tipBox.y + tipBox.height)}, row ${Math.round(owner.top)}-${Math.round(owner.bottom)}`);
   } else {
     check('A tooltip never floats away from its bar on scroll', true);
   }
@@ -679,7 +684,8 @@ async function main() {
   };
   const currentStep = () => card.getByRole('list', { name: 'Process' }).locator('[aria-current=step]').innerText();
 
-  check('A table row holds no process buttons', await row().getByRole('button', { name: /^(Shortlist|Select|Confirm)/ }).count() === 0);
+  check('A new CV\'s row offers Select and Reject', await row().getByRole('button', { name: 'Select Rupa Akter and hand over' }).count() === 1 && await row().getByRole('button', { name: 'Reject Rupa Akter' }).count() === 1);
+  check('A row holds no later process steps', await row().getByRole('button', { name: /^(Shortlist|Confirm|Candidate confirmed|Set interview)/ }).count() === 0);
   await row().getByRole('cell').last().click();
   await card.waitFor();
   check('One click anywhere on the row opens the card', true);
@@ -829,6 +835,7 @@ async function main() {
   await card.waitFor({ state: 'detached' });
   await page.getByText('Rupa Akter: saved. Now at Final selected.').waitFor();
   check('Save and close leaves the card and confirms it', true);
+  check('Once selected, the row no longer offers Select and Reject', await row().getByRole('button', { name: /^(Select|Reject) Rupa/ }).count() === 0);
   const reviewCell = await row().getByRole('cell').last().innerText();
   check('The row shows the CV review time', /^\d+(s|m \d+s|h \d+m)$/.test(reviewCell.trim()), reviewCell);
   await row().getByRole('cell').last().click();
@@ -866,6 +873,16 @@ async function main() {
   await farhanaCard.getByRole('button', { name: 'Save and close' }).click();
   await farhanaCard.waitFor({ state: 'detached' });
 
+  // --- Rejecting a new CV straight from its row, with the reason
+  const shirin = page.getByRole('row', { name: /Shirin Sultana/ });
+  await shirin.getByRole('button', { name: 'Reject Shirin Sultana' }).click();
+  const rowReject = page.getByRole('dialog', { name: 'Reject Shirin Sultana' });
+  await rowReject.getByLabel('Reason (optional)').fill('Not enough experience.');
+  await rowReject.getByRole('button', { name: 'Save rejection' }).click();
+  await rowReject.waitFor({ state: 'detached' });
+  await shirin.getByRole('button', { name: 'Reject Shirin Sultana' }).waitFor({ state: 'detached' });
+  check('Reject on a row asks the reason and rejects the CV', (await shirin.innerText()).includes('Rejected'));
+
   // --- Bulk actions
   await page.getByRole('tab', { name: /^New CVs/ }).click();
   await page.getByLabel('Select all shown candidates').check();
@@ -880,6 +897,19 @@ async function main() {
   // --- Download from a bucket
   const [bucketFile] = await Promise.all([page.waitForEvent('download'), page.getByRole('main').getByRole('button', { name: 'Download' }).click()]);
   check('Bucket table downloads as Excel', (await bucketFile.suggestedFilename()).endsWith('.xlsx'));
+
+  // --- Dashboard: everyone selected at CV review, in one card
+  await page.goto(`${BASE}/`);
+  const shortlistCard = page.getByRole('heading', { name: /^Shortlisted candidates \(\d+\)$/ });
+  await shortlistCard.waitFor();
+  check('The dashboard lists the shortlisted candidates', /\((\d+)\)/.exec(await shortlistCard.innerText())?.[1] > 0);
+  await page.getByRole('button', { name: 'See all' }).click();
+  const shortlistDetail = page.getByRole('dialog', { name: 'Shortlisted candidates' });
+  await shortlistDetail.getByRole('row', { name: /Open Rupa Akter/ }).waitFor();
+  check('See all shows every shortlisted candidate, Rupa included', true);
+  await shot('09a-dashboard-shortlisted');
+  await shortlistDetail.getByRole('button', { name: 'Close', exact: true }).first().click();
+  await shortlistDetail.waitFor({ state: 'detached' });
 
   // --- Block C
   await page.goto(`${BASE}/selected`);
@@ -1196,6 +1226,7 @@ async function main() {
   await nafis.screenshot({ path: join(shots, '15-nafis-dashboard.png'), fullPage: true });
 
   await page.goto(`${BASE}/buckets/bkt-3?stage=new`);
+  await page.getByRole('tablist', { name: 'Where candidates stand' }).waitFor();
   check('The first tab is still Tareq', await page.getByText('Assistant General Manager').count() >= 1);
   await page.getByRole('button', { name: /Tania Akter/ }).first().click();
   const tania = page.getByRole('dialog', { name: 'Tania Akter' });
