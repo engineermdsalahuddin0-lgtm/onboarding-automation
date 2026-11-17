@@ -19,3 +19,6 @@ data/
 # Local assistant settings: not part of the app.
 .claude/
 .env
+# Local passwords: never commit.
+password.txt
+.password.txt

@@ -430,10 +430,16 @@ async function main() {
   const postsTip = await page.getByRole('tooltip').filter({ visible: true }).innerText();
   check('Number of posts explains itself', postsTip.includes('How many people you will hire') && postsTip.includes('not the number of CVs'), postsTip.replace(/\s+/g, ' '));
   await recruit.getByRole('spinbutton', { name: /^Number of posts/ }).fill('2');
+  const interviewDay = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+  await recruit.getByLabel('Primary interview on: day').fill(interviewDay);
+  await recruit.getByLabel('Primary interview on: time').fill('10:30');
   await shot('03b-new-recruitment');
   await recruit.getByRole('button', { name: 'Create', exact: true }).click();
   await heading('Senior Executive').waitFor();
-  check('Create opens the new bucket, ready for CVs', /\/buckets\/[^/?]+$/.test(page.url()) && (await page.getByRole('main').innerText()).includes('TAL › HR & Admin › HR'), page.url());
+  const madeBucket = await page.getByRole('main').innerText();
+  check('Create opens the new bucket, ready for CVs', /\/buckets\/[^/?]+$/.test(page.url()) && madeBucket.includes('TAL › HR & Admin › HR'), page.url());
+  const dayShown = await page.getByText(/Primary interview .*10:30 AM/).first().waitFor({ timeout: 5000 }).then(() => true, () => false);
+  check('The new bucket shows its primary interview day', dayShown, madeBucket.split('\n').find((line) => /primary interview/i.test(line)) ?? '');
   await page.goto(`${BASE}/requisitions?tab=requisitions`);
   const madeRow = page.getByRole('row', { name: /Senior Executive/ });
   await madeRow.waitFor();
@@ -726,13 +732,18 @@ async function main() {
   await confirm.getByLabel('Candidate confirmed on: day').fill('2026-11-04');
   await confirm.getByLabel('Candidate confirmed on: time').fill('16:15');
   await shot('07b-confirm-dialog');
+  check('Confirming tells HR the primary interview set on the bucket', (await confirm.innerText()).includes('scheduled for the primary interview set on this bucket'));
   await confirm.getByRole('button', { name: 'Save confirmation' }).click();
   await confirm.waitFor({ state: 'detached' });
-  await stage('Call confirmed');
+  // The bucket has its primary interview day, so the confirmation schedules the candidate for it.
+  await stage('Primary scheduled');
   check('Confirmation day and time show on the bar', await card.getByRole('list', { name: 'Process' }).getByText('4 Nov, 4:15 PM').count() === 1);
-  await button('Set interview schedule').click();
+  check('The bucket\'s interview day shows on the bar', await card.getByRole('list', { name: 'Process' }).getByText(/, 11:00 AM$/).count() === 1);
+  await button('Change schedule').click();
   const message = page.getByRole('dialog', { name: 'Set primary interview schedule' });
   const markButton = message.getByRole('button', { name: 'Save schedule', exact: true });
+  check('Changing the schedule starts from the bucket day', (await message.getByLabel('Interview on: time').inputValue()) === '11:00');
+  await message.getByLabel('Interview on: day').fill('');
   check('A schedule cannot be set without a date', await markButton.isDisabled());
   await message.getByLabel('Interview on: day').fill('2026-07-07');
   await message.getByLabel('Interview on: time').fill('15:00');
@@ -1120,8 +1131,8 @@ async function main() {
   check('Application lands in the right bucket', await page.getByRole('row', { name: /Hena Begum/ }).getByText('Company form').count() === 1);
 
   await page.goto(`${BASE}/reviews`);
-  await page.getByText('Very professional.').waitFor();
-  check('Candidate review reaches HR', true);
+  await page.getByText('No survey linked yet').waitFor();
+  check('Candidate Reviews asks for the survey link until an admin adds it', true);
   await shot('13-reviews');
 
   // --- Settings and data surviving a reload

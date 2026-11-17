@@ -143,6 +143,15 @@ alter table public.settings add constraint settings_upload_limits check (
   upload_max_files between 1 and 5000 and upload_batch_size between 1 and 1000 and upload_batch_pause between 0 and 600
 );
 
+-- The Microsoft Forms summary link shown on Candidate Reviews. Anyone holding it can read every answer,
+-- so it lives here (staff only, through the settings policies) and not in the app's code. Only Forms
+-- addresses, matching frame-src in vercel.json and server/index.ts.
+alter table public.settings add column if not exists review_form_url text not null default '';
+alter table public.settings drop constraint if exists settings_review_form_url;
+alter table public.settings add constraint settings_review_form_url check (
+  review_form_url = '' or review_form_url ~ '^https://forms\.(cloud\.microsoft|office\.com)/'
+);
+
 -- No policies on purpose: only the server (service role) can read this table.
 create table if not exists public.app_secrets (
   key text primary key,
@@ -255,6 +264,9 @@ create table if not exists public.cv_buckets (
 alter table public.cv_buckets add column if not exists unit text not null default '';
 alter table public.cv_buckets add column if not exists section text not null default '';
 alter table public.cv_buckets add column if not exists subsection text not null default '';
+-- The primary interview day and time, set when the bucket is made. Candidates who confirm on the call are scheduled for it.
+alter table public.cv_buckets add column if not exists primary_date date;
+alter table public.cv_buckets add column if not exists primary_time text not null default '';
 
 create table if not exists public.candidates (
   id uuid primary key default gen_random_uuid(),
@@ -397,6 +409,14 @@ alter table public.candidates add column if not exists handed_over_by text not n
 alter table public.candidates add column if not exists handed_over_at timestamptz;
 -- What HR noted on the joining call: a condition the candidate set, why the day moved, anything worth keeping.
 alter table public.candidates add column if not exists joining_remarks text not null default '';
+-- A scheduled interview the candidate missed: told HR beforehand (cant_attend), did not come (absent), or said
+-- no on the follow-up call (not_interested). The note says why; reschedules counts the new dates given after.
+alter table public.candidates add column if not exists primary_attendance text not null default '';
+alter table public.candidates add column if not exists primary_attendance_note text not null default '';
+alter table public.candidates add column if not exists primary_reschedules int not null default 0;
+alter table public.candidates add column if not exists secondary_attendance text not null default '';
+alter table public.candidates add column if not exists secondary_attendance_note text not null default '';
+alter table public.candidates add column if not exists secondary_reschedules int not null default 0;
 
 -- A panel's score is the average of its interviewers, so it can be a fraction.
 alter table public.candidates alter column primary_score type numeric(4, 1);
@@ -455,6 +475,21 @@ alter table public.candidates add constraint joining_confirmed_needs_call
   check (joining_confirmed_date is null or (
     final_decision = 'confirmed' and joining_call_date is not null and joining_confirmed_date >= joining_call_date
   ));
+
+-- A missed interview is one that was scheduled. Saying no on the follow-up call ends that interview as rejected.
+alter table public.candidates drop constraint if exists attendance_values;
+alter table public.candidates add constraint attendance_values check (
+  primary_attendance in ('', 'cant_attend', 'absent', 'not_interested')
+  and secondary_attendance in ('', 'cant_attend', 'absent', 'not_interested')
+  and primary_reschedules >= 0 and secondary_reschedules >= 0
+);
+alter table public.candidates drop constraint if exists attendance_needs_interview;
+alter table public.candidates add constraint attendance_needs_interview check (
+  (primary_attendance = '' or primary_status in ('scheduled', 'rejected'))
+  and (primary_attendance <> 'not_interested' or primary_status = 'rejected')
+  and (secondary_attendance = '' or secondary_status in ('scheduled', 'rejected'))
+  and (secondary_attendance <> 'not_interested' or secondary_status = 'rejected')
+);
 
 create index if not exists candidates_bucket_idx on public.candidates (bucket_id);
 create index if not exists candidates_phone_idx on public.candidates (phone);
@@ -590,7 +625,8 @@ declare
     'message_status', 'primary_status', 'primary_date', 'primary_time', 'primary_panel', 'primary_score',
     'secondary_message_status', 'secondary_status', 'secondary_date', 'secondary_time', 'secondary_panel', 'secondary_score',
     'selection_category', 'final_decision', 'decision_date', 'decision_time', 'informed_date', 'informed_time',
-    'joining_date', 'joining_time'
+    'joining_date', 'joining_time',
+    'primary_attendance', 'primary_reschedules', 'secondary_attendance', 'secondary_reschedules'
   ];
 begin
   if old.final_decision is null or auth.uid() is null then
@@ -644,7 +680,9 @@ declare
     'final_decision', 'decision_date', 'decision_time', 'informed_date', 'informed_time', 'decided_by', 'decided_at',
     'joining_status', 'joining_date', 'joining_time', 'joining_call_date', 'joining_call_time',
     'joining_confirmed_date', 'joining_confirmed_time', 'joining_remarks', 'offered_salary', 'employee_code', 'probation_period',
-    'reporting_to', 'documents_received', 'offer_sent_at'
+    'reporting_to', 'documents_received', 'offer_sent_at',
+    'primary_attendance', 'primary_attendance_note', 'primary_reschedules',
+    'secondary_attendance', 'secondary_attendance_note', 'secondary_reschedules'
   ];
 begin
   if auth.uid() is null then
@@ -686,6 +724,36 @@ create trigger candidates_enforce_desk
   before insert or update on public.candidates
   for each row execute function public.enforce_desk();
 
+-- A missed interview: the process team gives one new date. After that, and for rejecting someone because
+-- they did not attend, an admin decides. With no signed-in user (the SQL Editor), nothing is enforced.
+create or replace function public.enforce_attendance()
+returns trigger language plpgsql set search_path = '' as $$
+declare
+  round text;
+  was jsonb := to_jsonb(old);
+  now_row jsonb := to_jsonb(new);
+begin
+  if auth.uid() is null or public.is_admin() then
+    return new;
+  end if;
+  foreach round in array array['primary', 'secondary'] loop
+    if (now_row ->> (round || '_reschedules'))::int > greatest(1, (was ->> (round || '_reschedules'))::int) then
+      raise exception 'A new interview date is given only once. After that an admin decides.';
+    end if;
+    if now_row ->> (round || '_status') = 'rejected' and was ->> (round || '_status') is distinct from 'rejected'
+       and now_row ->> (round || '_attendance') in ('cant_attend', 'absent') then
+      raise exception 'Only an admin can reject a candidate for not attending the interview.';
+    end if;
+  end loop;
+  return new;
+end;
+$$;
+
+drop trigger if exists candidates_enforce_attendance on public.candidates;
+create trigger candidates_enforce_attendance
+  before update on public.candidates
+  for each row execute function public.enforce_attendance();
+
 -- "Nafis", "Nafis, Mili" or "Whole process team", for the audit trail.
 create or replace function public.handler_names(p_assigned uuid[])
 returns text language sql stable security definer set search_path = '' as $$
@@ -704,7 +772,8 @@ declare
   new_value text;
   tracked text[] := array[
     'screening_status', 'call_status', 'message_status', 'primary_status',
-    'secondary_message_status', 'secondary_status', 'selection_category', 'final_decision', 'joining_status', 'bucket_id'
+    'secondary_message_status', 'secondary_status', 'selection_category', 'final_decision', 'joining_status', 'bucket_id',
+    'primary_attendance', 'primary_reschedules', 'secondary_attendance', 'secondary_reschedules'
   ];
 begin
   select coalesce(full_name, email, '') into actor from public.profiles where id = auth.uid();

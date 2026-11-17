@@ -23,6 +23,7 @@ import { useStore } from '../lib/store';
 import { BulkUploadDialog } from './BulkUpload';
 import { CandidateCard } from './CandidateCard';
 import { GuideProvider, HelpButton } from './Guide';
+import { LiveEmbed } from './LiveEmbed';
 import { NotificationBell } from './Notifications';
 import { PresenceProvider } from '../lib/presence';
 import { Avatar, Button, IconButton, StatusBadge } from './ui';
@@ -163,6 +164,15 @@ function GlobalSearch() {
   );
 }
 
+// The Microsoft Forms report on Candidate Reviews. It lives here, not on that page, so it starts loading
+// at sign-in and keeps itself up to date while people work elsewhere: opening the page shows it at once.
+function SurveyReport({ visible }: { visible: boolean }) {
+  const { settings } = useStore();
+  const url = settings.review_form_url;
+  if (!url) return null;
+  return <LiveEmbed key={url} src={url} title="Candidate Experience Survey responses" visible={visible} />;
+}
+
 export function Layout() {
   const { user } = useStore();
   if (!user) return null;
@@ -181,6 +191,7 @@ function Shell() {
   const [params, setParams] = useSearchParams();
   // A bucket page has its own Upload button, which already knows the bucket.
   const onBucketPage = useMatch('/buckets/:id') !== null;
+  const onReviewsPage = useMatch('/reviews') !== null;
   const openCandidate = params.get('candidate');
 
   return (
@@ -212,6 +223,7 @@ function Shell() {
         </header>
         <main id="main-content" tabIndex={-1} className="mx-auto w-full max-w-[1400px] flex-1 px-5 py-6 outline-none">
           <Outlet />
+          <SurveyReport visible={onReviewsPage} />
         </main>
       </div>
       {uploading && <BulkUploadDialog onClose={() => setUploading(false)} />}

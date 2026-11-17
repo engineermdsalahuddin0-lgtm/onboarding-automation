@@ -55,6 +55,8 @@ export const PROCESS_FIELDS = [
   'joining_status', 'joining_date', 'joining_time', 'joining_call_date', 'joining_call_time',
   'joining_confirmed_date', 'joining_confirmed_time', 'joining_remarks', 'offered_salary', 'employee_code', 'probation_period',
   'reporting_to', 'documents_received', 'offer_sent_at',
+  'primary_attendance', 'primary_attendance_note', 'primary_reschedules',
+  'secondary_attendance', 'secondary_attendance_note', 'secondary_reschedules',
 ] as const;
 
 type StepFields = Pick<

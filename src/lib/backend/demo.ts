@@ -9,7 +9,7 @@ import { BackendError, type Backend, type ListOptions, type PresenceEntry, type 
 
 const DB_NAME = 'bitopi-onboarding-demo';
 // Bump when the sample data's shape changes: browsers holding an older copy start again from fresh samples.
-const STATE_KEY = 'state-v10';
+const STATE_KEY = 'state-v11';
 
 type Row = Record<string, any>;
 type State = Record<string, Row[]> & { __secrets?: any };
@@ -57,6 +57,10 @@ const TRACKED_FIELDS = [
   'final_decision',
   'joining_status',
   'bucket_id',
+  'primary_attendance',
+  'primary_reschedules',
+  'secondary_attendance',
+  'secondary_reschedules',
 ];
 
 const CANDIDATE_DEFAULTS: Partial<Candidate> = {
@@ -138,6 +142,12 @@ const CANDIDATE_DEFAULTS: Partial<Candidate> = {
   secondary_score: null,
   secondary_feedback: '',
   secondary_panel: [],
+  primary_attendance: '',
+  primary_attendance_note: '',
+  primary_reschedules: 0,
+  secondary_attendance: '',
+  secondary_attendance_note: '',
+  secondary_reschedules: 0,
   selection_category: null,
   final_decision: null,
   decision_date: null,
@@ -187,6 +197,30 @@ function checkPipeline(row: Row) {
   }
   if (row.joining_confirmed_date && (row.final_decision !== 'confirmed' || !row.joining_call_date || row.joining_confirmed_date < row.joining_call_date)) {
     throw new BackendError('A confirmed joining day needs the joining call, and cannot come before it.');
+  }
+  // Mirrors the attendance checks in schema.sql.
+  for (const round of ['primary', 'secondary']) {
+    const attendance = row[`${round}_attendance`] ?? '';
+    const status = row[`${round}_status`];
+    if (!['', 'cant_attend', 'absent', 'not_interested'].includes(attendance)
+      || (attendance !== '' && status !== 'scheduled' && status !== 'rejected')
+      || (attendance === 'not_interested' && status !== 'rejected')) {
+      throw new BackendError('A missed interview has to be one that was scheduled.');
+    }
+  }
+}
+
+/** Mirrors enforce_attendance in schema.sql: one new date for the process team, then an admin decides. */
+function checkAttendance(user: Profile, row: Row, next: Row) {
+  if (user.role === 'admin') return;
+  for (const round of ['primary', 'secondary']) {
+    if ((next[`${round}_reschedules`] ?? 0) > Math.max(1, row[`${round}_reschedules`] ?? 0)) {
+      throw new BackendError('A new interview date is given only once. After that an admin decides.');
+    }
+    if (next[`${round}_status`] === 'rejected' && row[`${round}_status`] !== 'rejected'
+      && ['cant_attend', 'absent'].includes(next[`${round}_attendance`])) {
+      throw new BackendError('Only an admin can reject a candidate for not attending the interview.');
+    }
   }
 }
 
@@ -406,6 +440,8 @@ export function createDemoBackend(): Backend {
           unit: '',
           section: '',
           subsection: '',
+          primary_date: null,
+          primary_time: '',
           ...row,
         };
       case 'questions': {
@@ -535,6 +571,7 @@ export function createDemoBackend(): Backend {
           checkDesk(demoUser(), row, next);
           checkLock(row, next);
           checkPipeline(next);
+          checkAttendance(demoUser(), row, next);
           if (row.secondary_status !== next.secondary_status) {
             next.selected_at = next.secondary_status === 'selected' ? new Date().toISOString() : null;
           }

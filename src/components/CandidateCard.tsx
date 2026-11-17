@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   Calendar,
+  CalendarX,
   Camera,
   Check,
   CheckCircle2,
@@ -22,13 +23,14 @@ import {
   Trash2,
   Undo2,
   UserRound,
+  UserX,
   X,
 } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { backend } from '../lib/backend';
 import { classNames, dateMedium, dateTime, duration, money, whenText } from '../lib/format';
-import { CATEGORY_LABELS, correctableSteps, EDIT_STEP_LABELS, isLocked, JOINING, openReviewStage, setCategory, shortlist, stageOf, stepBack, unlockDecision } from '../lib/pipeline';
+import { attendanceOf, canGiveNewDate, CATEGORY_LABELS, correctableSteps, EDIT_STEP_LABELS, isLocked, JOINING, openReviewStage, reschedulesOf, scheduledRound, setCategory, shortlist, stageOf, stepBack, unlockDecision } from '../lib/pipeline';
 import { usePresence } from '../lib/presence';
 import { useFileUrls, useReviewTimer, useStore } from '../lib/store';
 import { handlerNames, personName, processTeam } from '../lib/team';
@@ -36,7 +38,7 @@ import { HelpTip, useGuide } from './Guide';
 import type { Candidate, CandidateEvent, CvReviewSession, EditStep, InterviewerScore, MessageLogEntry } from '../types';
 import { CorrectionsStrip, RequestCorrectionDialog } from './Corrections';
 import { HandoverDialog } from './HandoverDialog';
-import { CallDialog, DecisionDialog, InterviewResultDialog, JoiningCallDialog, JoiningDialog, ReviewLinkDialog, ScheduleDialog, ScreeningRejectDialog } from './PipelineDialogs';
+import { CallDialog, DecisionDialog, InterviewResultDialog, JoiningCallDialog, JoiningDialog, MissedDialog, NewDateDialog, RejectMissedDialog, ReviewLinkDialog, ScheduleDialog, ScreeningRejectDialog } from './PipelineDialogs';
 import { ProcessBar } from './ProcessBar';
 import { fromDraft, ProfileEditor, sameDraft, toDraft, type ProfileDraft } from './ProfileEditor';
 import { Avatar, Button, Confirm, Dialog, errorText, RecommendationStars, Spinner, StatusBadge, Tabs, useToast } from './ui';
@@ -56,7 +58,14 @@ const FIELD_NAMES: Record<string, string> = {
   joining_status: 'Joining',
   bucket_id: 'Moved bucket',
   assigned_to: 'Handed to',
+  primary_attendance: 'Primary interview attendance',
+  secondary_attendance: 'Final interview attendance',
+  primary_reschedules: 'Primary interview: new date given',
+  secondary_reschedules: 'Final interview: new date given',
 };
+
+/** Fields whose value means nothing on its own in History: the label says it all. */
+const LABEL_ONLY = new Set(['bucket_id', 'primary_reschedules', 'secondary_reschedules']);
 
 const VALUE_NAMES: Record<string, string> = {
   new: 'New',
@@ -77,7 +86,16 @@ const VALUE_NAMES: Record<string, string> = {
   declined: 'Did not confirm',
   merit: 'Merit',
   waiting: 'Waiting',
+  cant_attend: "Can't attend",
+  absent: 'Absent',
+  not_interested: 'Not interested (follow-up call)',
 };
+
+/** "Absent: phone off" or "New date given: exam that day", empty when the interview was never missed. */
+function missedFact(attendance: string | undefined, note: string | undefined, reschedules: number | undefined): string {
+  const state = attendance ? VALUE_NAMES[attendance] : reschedules ? `New date given${reschedules > 1 ? ` (${reschedules} times)` : ''}` : '';
+  return state ? [state, note].filter(Boolean).join(': ') : '';
+}
 
 function Facts({ items }: { items: [string, string | number | null | undefined][] }) {
   const present = items.filter(([, value]) => value !== null && value !== undefined && value !== '');
@@ -165,9 +183,11 @@ function DetailsTab({ c }: { c: Candidate }) {
               ['Call again on', whenText(c.followup_on, c.followup_time)],
               ['Call note', c.call_note],
               ['Primary interview on', whenText(c.primary_date, c.primary_time)],
+              ['Primary interview missed', missedFact(c.primary_attendance, c.primary_attendance_note, c.primary_reschedules)],
               ['Primary score', c.primary_score !== null ? `${c.primary_score}/10` : ''],
               ['Primary feedback', c.primary_feedback],
               ['Final interview on', whenText(c.secondary_date, c.secondary_time)],
+              ['Final interview missed', missedFact(c.secondary_attendance, c.secondary_attendance_note, c.secondary_reschedules)],
               ['Final score', c.secondary_score !== null ? `${c.secondary_score}/10` : ''],
               ['Final interview remarks', c.secondary_feedback],
               ['Selection list', c.selection_category ? CATEGORY_LABELS[c.selection_category] : ''],
@@ -343,7 +363,8 @@ function HistoryTab({ c }: { c: Candidate }) {
             ) : (
               <p>
                 <span className="font-medium">{FIELD_NAMES[event.field] ?? event.field}</span>
-                {event.to_value && event.field !== 'bucket_id' && <>: {VALUE_NAMES[event.to_value] ?? event.to_value}</>}
+                {event.to_value && !LABEL_ONLY.has(event.field) && <>: {VALUE_NAMES[event.to_value] ?? event.to_value}</>}
+                {event.to_value === '' && event.field.endsWith('_attendance') && <>: cleared</>}
               </p>
             )}
             <p className="text-xs text-ink-muted">{dateTime(event.created_at)}{event.actor_name ? ` · ${event.actor_name}` : ''}</p>
@@ -391,7 +412,10 @@ type StepModal =
   | { kind: 'joining' }
   | { kind: 'joiningCall' }
   | { kind: 'unlock' }
-  | { kind: 'requestCorrection' };
+  | { kind: 'requestCorrection' }
+  | { kind: 'missed'; attendance: 'cant_attend' | 'absent' }
+  | { kind: 'newDate' }
+  | { kind: 'rejectMissed'; reason: 'not_interested' | 'admin' };
 
 type PanelTone = 'current' | 'good' | 'bad' | 'muted';
 
@@ -429,8 +453,50 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
   let tip = '';
 
   const reject = (onClick: () => void, label = 'Reject') => <Button variant="danger" icon={X} onClick={onClick}>{label}</Button>;
+  // A scheduled interview the candidate missed takes over the panel until it has a new date or ends.
+  const round = scheduledRound(c);
+  const missed = round ? attendanceOf(c, round) : '';
+  const missedButtons = (
+    <>
+      <Button icon={CalendarX} onClick={() => open({ kind: 'missed', attendance: 'cant_attend' })}>Can't attend</Button>
+      <Button icon={UserX} onClick={() => open({ kind: 'missed', attendance: 'absent' })}>Absent</Button>
+    </>
+  );
 
-  if (c.final_decision === 'confirmed') {
+  if (round && (missed === 'cant_attend' || missed === 'absent')) {
+    const roundName = round === 'primary' ? 'primary' : 'final';
+    const note = c[`${round}_attendance_note`];
+    const secondTime = reschedulesOf(c, round) >= 1;
+    const newDateAllowed = canGiveNewDate(c, round, isAdmin);
+    tone = secondTime ? 'bad' : 'current';
+    icon = missed === 'absent' ? UserX : CalendarX;
+    title = secondTime
+      ? `Missed the new ${roundName} interview date too. ${isAdmin ? 'Your decision as admin.' : 'An admin decides.'}`
+      : missed === 'absent'
+        ? `Absent from the ${roundName} interview. Next: follow-up call.`
+        : `Can't attend the ${roundName} interview. Next: give a new date.`;
+    tip = missed === 'absent'
+      ? 'Call the candidate. Will come: give the new date (once). Not interested: the process stops. An admin can also reject for not attending.'
+      : 'Give one new date. If the candidate misses that too, an admin decides. An admin can also reject for not attending.';
+    body = (
+      <>
+        Was scheduled for <strong className="tabular">{whenText(c[`${round}_date`], c[`${round}_time`])}</strong>
+        {note && <span className="mt-1 block whitespace-pre-wrap">Remarks: <strong className="font-medium">{note}</strong></span>}
+        {c.phone && <span className="mt-1 block"><a className="tabular underline" href={`tel:${c.phone}`}>{c.phone}</a></span>}
+      </>
+    );
+    actions = (
+      <>
+        {newDateAllowed && (
+          <Button variant="primary" icon={Calendar} onClick={() => open({ kind: 'newDate' })}>
+            {missed === 'absent' && !secondTime ? 'Will come: new date' : secondTime ? 'Give another date (admin)' : 'Give new date'}
+          </Button>
+        )}
+        {missed === 'absent' && !secondTime && reject(() => open({ kind: 'rejectMissed', reason: 'not_interested' }), 'Not interested')}
+        {isAdmin && reject(() => open({ kind: 'rejectMissed', reason: 'admin' }), 'Reject for not attending')}
+      </>
+    );
+  } else if (c.final_decision === 'confirmed') {
     tone = 'good';
     icon = Lock;
     // The joining call comes next while the candidate is still to join: it records the day they confirm.
@@ -508,20 +574,27 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
   } else if (c.primary_status === 'pending' || c.primary_status === 'scheduled') {
     icon = ClipboardList;
     title = 'Primary interview result';
-    tip = 'Select: passed the primary interview; enter each interviewer\'s score and whether they recommend the candidate. Reject: the process stops here. Change schedule moves the interview.';
-    body = c.primary_date ? `Scheduled for ${whenText(c.primary_date, c.primary_time)}.` : 'Enter the result after the interview.';
+    tip = 'Select: passed the primary interview; enter each interviewer\'s score and whether they recommend the candidate. Reject: the process stops here. Can\'t attend: told you beforehand. Absent: did not come. Change schedule moves the interview.';
+    body = c.primary_date
+      ? `Scheduled for ${whenText(c.primary_date, c.primary_time)}${c.primary_reschedules > 0 ? ' (new date)' : ''}.`
+      : 'Enter the result after the interview.';
     actions = (
       <>
         <Button variant="primary" icon={Check} onClick={() => open({ kind: 'result', stage: 'primary', result: 'selected' })}>Select</Button>
         {reject(() => open({ kind: 'result', stage: 'primary', result: 'rejected' }))}
+        {c.primary_status === 'scheduled' && missedButtons}
         <Button icon={Calendar} onClick={() => open({ kind: 'schedule', stage: 'primary' })}>Change schedule</Button>
       </>
     );
   } else if (c.primary_status === 'rejected') {
     tone = 'bad';
     icon = X;
-    title = 'Rejected at the primary interview';
-    body = c.primary_score !== null ? `Score ${c.primary_score}/10.` : 'The process stopped here.';
+    title = c.primary_attendance === 'not_interested'
+      ? 'Not interested after missing the primary interview'
+      : c.primary_attendance ? 'Rejected for not attending the primary interview' : 'Rejected at the primary interview';
+    body = c.primary_attendance
+      ? c.primary_attendance_note || 'The process stopped here.'
+      : c.primary_score !== null ? `Score ${c.primary_score}/10.` : 'The process stopped here.';
   } else if (c.secondary_status === 'pending') {
     icon = Calendar;
     title = 'Set the final interview schedule';
@@ -531,12 +604,13 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
   } else if (c.secondary_status === 'scheduled') {
     icon = ClipboardList;
     title = 'Final interview result';
-    tip = 'Select: passed the final interview; enter the scores and put the candidate on the merit or the waiting list. Reject: the process stops here.';
-    body = `Scheduled for ${whenText(c.secondary_date, c.secondary_time)}.`;
+    tip = 'Select: passed the final interview; enter the scores and put the candidate on the merit or the waiting list. Reject: the process stops here. Can\'t attend: told you beforehand. Absent: did not come.';
+    body = `Scheduled for ${whenText(c.secondary_date, c.secondary_time)}${c.secondary_reschedules > 0 ? ' (new date)' : ''}.`;
     actions = (
       <>
         <Button variant="primary" icon={Check} onClick={() => open({ kind: 'result', stage: 'secondary', result: 'selected' })}>Select</Button>
         {reject(() => open({ kind: 'result', stage: 'secondary', result: 'rejected' }))}
+        {missedButtons}
         <Button icon={Calendar} onClick={() => open({ kind: 'schedule', stage: 'secondary' })}>Change schedule</Button>
       </>
     );
@@ -848,6 +922,9 @@ export function CandidateCard({ candidateId, onClose }: { candidateId: string; o
       {modal?.kind === 'joining' && <JoiningDialog candidate={c} onClose={closeModal} />}
       {modal?.kind === 'joiningCall' && <JoiningCallDialog candidate={c} onClose={closeModal} />}
       {modal?.kind === 'requestCorrection' && <RequestCorrectionDialog candidate={c} onClose={closeModal} />}
+      {modal?.kind === 'missed' && <MissedDialog candidates={[c]} attendance={modal.attendance} onClose={closeModal} />}
+      {modal?.kind === 'newDate' && <NewDateDialog candidates={[c]} onClose={closeModal} />}
+      {modal?.kind === 'rejectMissed' && <RejectMissedDialog candidate={c} reason={modal.reason} onClose={closeModal} />}
       {modal?.kind === 'unlock' && (
         <Confirm
           danger

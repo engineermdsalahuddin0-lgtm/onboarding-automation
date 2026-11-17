@@ -182,6 +182,41 @@ describe('pipeline rules in the database', () => {
     expect(undone.selected_at).toBeNull();
   });
 
+  it('keeps a missed interview to the rules: one new date, then an admin decides', async () => {
+    const id = await addCandidate(bucket);
+    await expect(as(HR, `update candidates set primary_attendance = 'absent' where id = $1`, [id])).rejects.toThrow(/attendance_needs_interview/);
+    await as(HR, `update candidates set screening_status = 'shortlisted', call_status = 'confirm', message_status = 'message_done',
+      primary_status = 'scheduled', primary_date = current_date where id = $1`, [id]);
+    await expect(as(HR, `update candidates set primary_attendance = 'gone' where id = $1`, [id])).rejects.toThrow(/attendance_values/);
+    await expect(as(HR, `update candidates set primary_attendance = 'not_interested' where id = $1`, [id])).rejects.toThrow(/attendance_needs_interview/);
+
+    await as(HR, `update candidates set primary_attendance = 'absent', primary_attendance_note = 'Phone off' where id = $1`, [id]);
+    await expect(as(HR, `update candidates set primary_status = 'rejected' where id = $1`, [id])).rejects.toThrow(/Only an admin/);
+    // The follow-up call: the candidate will come, so the process team gives the one new date.
+    await as(HR, `update candidates set primary_attendance = '', primary_reschedules = 1, primary_date = current_date + 3 where id = $1`, [id]);
+    await as(HR, `update candidates set primary_attendance = 'absent' where id = $1`, [id]);
+    await expect(as(HR, `update candidates set primary_attendance = '', primary_reschedules = 2 where id = $1`, [id])).rejects.toThrow(/only once/);
+    await as(ADMIN, `update candidates set primary_status = 'rejected' where id = $1`, [id]);
+
+    const events = await as(HR, `select field, to_value from candidate_events where candidate_id = $1 and field like 'primary_%' order by created_at`, [id]);
+    expect(events.map((e) => `${e.field}=${e.to_value}`)).toEqual(expect.arrayContaining(['primary_attendance=absent', 'primary_reschedules=1', 'primary_status=rejected']));
+  });
+
+  it('lets the process team record "not interested" on the follow-up call', async () => {
+    const id = await addCandidate(bucket);
+    await as(HR, `update candidates set screening_status = 'shortlisted', call_status = 'confirm', message_status = 'message_done',
+      primary_status = 'scheduled', primary_date = current_date, primary_attendance = 'absent' where id = $1`, [id]);
+    await as(HR, `update candidates set primary_status = 'rejected', primary_attendance = 'not_interested' where id = $1`, [id]);
+    const [row] = await as(HR, `select primary_status, primary_attendance from candidates where id = $1`, [id]);
+    expect(row).toEqual({ primary_status: 'rejected', primary_attendance: 'not_interested' });
+  });
+
+  it('keeps the primary interview day on the bucket', async () => {
+    const [row] = await as(HR, `update cv_buckets set primary_date = '2026-12-01', primary_time = '10:30' where id = $1 returning primary_date, primary_time`, [bucket]);
+    expect(row.primary_time).toBe('10:30');
+    expect(row.primary_date).not.toBeNull();
+  });
+
   async function atFinalInterview() {
     const id = await addCandidate(bucket);
     await as(HR, `update candidates set screening_status = 'shortlisted', call_status = 'confirm', message_status = 'message_done', primary_status = 'selected', secondary_status = 'scheduled' where id = $1`, [id]);
@@ -527,6 +562,17 @@ describe('CV upload limits', () => {
     await expect(as(ADMIN, 'update settings set upload_batch_pause = 601')).rejects.toThrow(/settings_upload_limits/);
     await as(ADMIN, 'update settings set upload_batch_size = 25, upload_batch_pause = 0');
     await as(ADMIN, 'update settings set upload_batch_size = 50, upload_batch_pause = 10');
+  });
+});
+
+describe('Candidate Reviews survey link', () => {
+  it('takes only a Microsoft Forms address and is never readable without signing in', async () => {
+    const link = 'https://forms.cloud.microsoft/Pages/AnalysisPage.aspx?AnalyzerToken=test';
+    await expect(as(ADMIN, `update settings set review_form_url = 'https://example.com/x'`)).rejects.toThrow(/settings_review_form_url/);
+    await as(ADMIN, 'update settings set review_form_url = $1', [link]);
+    expect((await as(HR, 'select review_form_url from settings'))[0].review_form_url).toBe(link);
+    expect(await as(null, 'select review_form_url from settings')).toEqual([]);
+    await as(ADMIN, `update settings set review_form_url = ''`);
   });
 });
 

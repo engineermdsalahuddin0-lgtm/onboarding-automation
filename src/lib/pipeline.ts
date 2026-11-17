@@ -1,4 +1,4 @@
-import type { Candidate, CallStatus, EditStep, InterviewerScore, InterviewStatus, JoiningStatus, SelectionCategory } from '../types';
+import type { Attendance, Candidate, CallStatus, CvBucket, EditStep, InterviewerScore, InterviewStatus, JoiningStatus, SelectionCategory } from '../types';
 import { dayMonth, time12 } from './format';
 
 export type Tone = 'neutral' | 'info' | 'progress' | 'warning' | 'good' | 'bad';
@@ -19,7 +19,17 @@ type PipelineFields = Pick<
   | 'secondary_status'
   | 'joining_status'
   | 'final_decision'
+  | 'primary_attendance'
+  | 'secondary_attendance'
 >;
+
+export type Round = 'primary' | 'secondary';
+
+export const ROUND_LABELS: Record<Round, string> = { primary: 'Primary', secondary: 'Final' };
+
+/** A missed interview in words. Older rows may not carry the column yet, so a missing value means nothing missed. */
+const missedText = (attendance: Attendance | undefined) =>
+  attendance === 'cant_attend' ? "Can't attend" : attendance === 'absent' ? 'Absent' : attendance === 'not_interested' ? 'Not interested' : '';
 
 /** The one place that turns the status columns into a single human-readable stage. */
 export function stageOf(c: PipelineFields): StageInfo {
@@ -28,12 +38,18 @@ export function stageOf(c: PipelineFields): StageInfo {
   if (c.final_decision === 'confirmed') {
     return { key: 'letter_sent', label: c.joining_status === 'accepted' ? 'Joining confirmed' : 'Confirmed', tone: 'good' };
   }
+  const finalMissed = missedText(c.secondary_attendance);
+  const primaryMissed = missedText(c.primary_attendance);
   if (c.secondary_status === 'selected') return { key: 'selected', label: 'Final selected', tone: 'good' };
-  if (c.secondary_status === 'rejected') return { key: 'rej_secondary', label: 'Rejected · Final', tone: 'bad' };
-  if (c.secondary_status === 'scheduled') return { key: 'secondary', label: 'Final scheduled', tone: 'progress' };
+  if (c.secondary_status === 'rejected') return { key: 'rej_secondary', label: finalMissed ? `Rejected · ${finalMissed} (Final)` : 'Rejected · Final', tone: 'bad' };
+  if (c.secondary_status === 'scheduled') {
+    return finalMissed ? { key: 'secondary', label: `${finalMissed} · Final`, tone: 'warning' } : { key: 'secondary', label: 'Final scheduled', tone: 'progress' };
+  }
   if (c.primary_status === 'selected') return { key: 'primary_selected', label: 'Primary selected', tone: 'progress' };
-  if (c.primary_status === 'rejected') return { key: 'rej_primary', label: 'Rejected · Primary', tone: 'bad' };
-  if (c.primary_status === 'scheduled') return { key: 'primary', label: 'Primary scheduled', tone: 'progress' };
+  if (c.primary_status === 'rejected') return { key: 'rej_primary', label: primaryMissed ? `Rejected · ${primaryMissed} (Primary)` : 'Rejected · Primary', tone: 'bad' };
+  if (c.primary_status === 'scheduled') {
+    return primaryMissed ? { key: 'primary', label: `${primaryMissed} · Primary`, tone: 'warning' } : { key: 'primary', label: 'Primary scheduled', tone: 'progress' };
+  }
   if (c.message_status === 'message_done') return { key: 'messaged', label: 'Primary scheduled', tone: 'progress' };
   if (c.call_status === 'reject') return { key: 'rej_call', label: 'Rejected · Call', tone: 'bad' };
   if (c.call_status === 'confirm') return { key: 'confirmed', label: 'Call confirmed', tone: 'info' };
@@ -64,6 +80,7 @@ export const LOCKED_FIELDS = [
   'secondary_message_status', 'secondary_status', 'secondary_date', 'secondary_time', 'secondary_panel', 'secondary_score',
   'selection_category', 'final_decision', 'decision_date', 'decision_time', 'informed_date', 'informed_time',
   'joining_date', 'joining_time',
+  'primary_attendance', 'primary_reschedules', 'secondary_attendance', 'secondary_reschedules',
 ] as const;
 
 // Each helper returns only the columns that change. Moving a stage backwards clears everything
@@ -95,6 +112,9 @@ const CLEAR_SECONDARY: Partial<Candidate> = {
   secondary_panel: [],
   secondary_score: null,
   secondary_interviewer: '',
+  secondary_attendance: '',
+  secondary_attendance_note: '',
+  secondary_reschedules: 0,
   selection_category: null,
   ...CLEAR_DECISION,
 };
@@ -106,6 +126,9 @@ const CLEAR_PRIMARY: Partial<Candidate> = {
   primary_panel: [],
   primary_score: null,
   primary_interviewer: '',
+  primary_attendance: '',
+  primary_attendance_note: '',
+  primary_reschedules: 0,
   ...CLEAR_SECONDARY,
 };
 
@@ -177,6 +200,8 @@ export function setCall(
     /** The day and time the candidate turned the job down. */
     rejectedDate?: string | null;
     rejectedTime?: string;
+    /** On a confirmation: the bucket's primary interview, which the candidate is then scheduled for. */
+    primarySlot?: Slot | null;
   } = {},
 ): Partial<Candidate> {
   const patch: Partial<Candidate> = {
@@ -194,7 +219,27 @@ export function setCall(
     call_rejected_time: status === 'reject' ? (opts.rejectedTime ?? '') : '',
   };
   if (opts.note !== undefined) patch.call_note = opts.note;
+  if (status === 'confirm' && opts.primarySlot) {
+    Object.assign(patch, schedulePrimary({ channel: BUCKET_SLOT_CHANNEL, date: opts.primarySlot.date, time: opts.primarySlot.time, now: opts.now }));
+  }
   return patch;
+}
+
+export interface Slot {
+  date: string;
+  time: string;
+}
+
+/** How the candidate heard of a primary interview set on the bucket: on the confirmation call itself. */
+export const BUCKET_SLOT_CHANNEL = 'Phone call';
+
+/**
+ * The primary interview set on the bucket, for a candidate who confirms on the given day. None when the
+ * bucket has no day set, or the day has already passed: then the schedule is set by hand as before.
+ */
+export function bucketSlot(bucket: Pick<CvBucket, 'primary_date' | 'primary_time'> | undefined, confirmedOn: string): Slot | null {
+  if (!bucket?.primary_date || bucket.primary_date < confirmedOn) return null;
+  return { date: bucket.primary_date, time: bucket.primary_time ?? '' };
 }
 
 export function schedulePrimary(opts: {
@@ -215,10 +260,13 @@ export function undoSchedule(): Partial<Candidate> {
   return { ...CLEAR_MESSAGE };
 }
 
+// A result entered from the interview means the candidate came: any missed mark is cleared. A rejection
+// for not attending passes its own attendance in extra.
 export function setPrimary(status: InterviewStatus, extra: Partial<Candidate> = {}): Partial<Candidate> {
   return {
     ...(status === 'selected' ? {} : CLEAR_SECONDARY),
     ...(status === 'pending' ? { primary_date: null, primary_time: '' } : {}),
+    ...(status === 'scheduled' ? {} : { primary_attendance: '' as Attendance }),
     primary_status: status,
     ...extra,
   };
@@ -238,9 +286,120 @@ export function setSecondary(status: InterviewStatus, extra: Partial<Candidate> 
   return {
     ...(status === 'selected' ? {} : { joining_status: 'pending' as JoiningStatus, selection_category: null }),
     ...(status === 'pending' ? { secondary_date: null, secondary_time: '' } : {}),
+    ...(status === 'scheduled' ? {} : { secondary_attendance: '' as Attendance }),
     secondary_status: status,
     ...extra,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Missed interviews: told HR they cannot come, or did not come. A new date is given once; after that, and
+// for rejecting someone for not attending, an admin decides. Mirrors enforce_attendance in schema.sql.
+// ---------------------------------------------------------------------------
+
+type AttendanceFields = Pick<
+  Candidate,
+  | 'message_status' | 'primary_status' | 'secondary_status' | 'final_decision'
+  | 'primary_attendance' | 'primary_attendance_note' | 'primary_reschedules' | 'primary_date' | 'primary_time'
+  | 'secondary_attendance' | 'secondary_attendance_note' | 'secondary_reschedules' | 'secondary_date' | 'secondary_time'
+>;
+
+/** The interview the candidate is scheduled for and has not had a result in, if any. */
+export function scheduledRound(c: Pick<Candidate, 'primary_status' | 'secondary_status' | 'final_decision'>): Round | null {
+  if (c.final_decision !== null) return null;
+  if (c.secondary_status === 'scheduled') return 'secondary';
+  if (c.primary_status === 'scheduled' && c.secondary_status === 'pending') return 'primary';
+  return null;
+}
+
+export const attendanceOf = (c: Partial<AttendanceFields>, round: Round): Attendance => (c[`${round}_attendance`] ?? '') as Attendance;
+export const reschedulesOf = (c: Partial<AttendanceFields>, round: Round): number => c[`${round}_reschedules`] ?? 0;
+
+/** Told HR beforehand that they cannot come, or did not come at all. */
+/** Left empty, the remarks keep what was written last time, so a second miss does not wipe the first reason. */
+export function markMissed(round: Round, attendance: 'cant_attend' | 'absent', note: string): Partial<Candidate> {
+  return { [`${round}_attendance`]: attendance, ...(note.trim() ? { [`${round}_attendance_note`]: note.trim() } : {}) } as Partial<Candidate>;
+}
+
+/** Takes back a missed mark entered by mistake: the candidate is simply scheduled again. */
+export function clearMissed(round: Round): Partial<Candidate> {
+  return { [`${round}_attendance`]: '' } as Partial<Candidate>;
+}
+
+/** A new date after a missed interview. The note (why they missed it) stays, so the reason is not lost. */
+export function giveNewDate(c: Partial<AttendanceFields>, round: Round, slot: Slot, note?: string): Partial<Candidate> {
+  return {
+    [`${round}_status`]: 'scheduled',
+    [`${round}_date`]: slot.date,
+    [`${round}_time`]: slot.time,
+    [`${round}_attendance`]: '',
+    [`${round}_reschedules`]: reschedulesOf(c, round) + 1,
+    ...(note !== undefined && note.trim() ? { [`${round}_attendance_note`]: note.trim() } : {}),
+  } as Partial<Candidate>;
+}
+
+/**
+ * Ends a missed interview as rejected: the candidate said no on the follow-up call (not_interested), or an
+ * admin rejects them for not attending (their attendance stays as it was). A final interview also needs the
+ * final decision's dates, which the caller adds with rejectDecision.
+ */
+export function rejectMissed(c: Partial<AttendanceFields>, round: Round, reason: 'not_interested' | 'admin', note: string): Partial<Candidate> {
+  const extra = {
+    [`${round}_attendance`]: reason === 'not_interested' ? 'not_interested' : attendanceOf(c, round),
+    ...(note.trim() ? { [`${round}_attendance_note`]: note.trim() } : {}),
+  } as Partial<Candidate>;
+  return round === 'primary' ? setPrimary('rejected', extra) : setSecondary('rejected', extra);
+}
+
+/** May this person give a new date now? Once for anyone on the process team, more often only for an admin. */
+export function canGiveNewDate(c: Partial<AttendanceFields>, round: Round, isAdmin: boolean): boolean {
+  const attendance = attendanceOf(c, round);
+  return (attendance === 'cant_attend' || attendance === 'absent') && (isAdmin || reschedulesOf(c, round) < 1);
+}
+
+export type MissedState = 'cant_attend' | 'absent' | 'admin' | 'new_date' | 'rejected' | 'not_interested';
+
+export const MISSED_LABELS: Record<MissedState, { label: string; tone: Tone }> = {
+  cant_attend: { label: "Can't attend · new date to give", tone: 'warning' },
+  absent: { label: 'Absent · follow-up call to make', tone: 'warning' },
+  admin: { label: 'Missed the new date too · admin to decide', tone: 'bad' },
+  new_date: { label: 'New date given', tone: 'info' },
+  rejected: { label: 'Rejected for not attending', tone: 'bad' },
+  not_interested: { label: 'Not interested (follow-up call)', tone: 'bad' },
+};
+
+export interface Missed {
+  round: Round;
+  state: MissedState;
+  note: string;
+  /** The interview day and time on record: the missed one, or the new one. */
+  date: string | null;
+  time: string;
+  /** Still needs someone to act: a new date, a follow-up call, or an admin's decision. */
+  open: boolean;
+}
+
+/** Where a candidate who missed an interview stands, for the dashboard and the card. Null if they never missed one. */
+export function missedInterview(c: AttendanceFields): Missed | null {
+  for (const round of ['secondary', 'primary'] as Round[]) {
+    const status = c[`${round}_status`];
+    const attendance = attendanceOf(c, round);
+    const reschedules = reschedulesOf(c, round);
+    const base = { round, note: c[`${round}_attendance_note`] ?? '', date: c[`${round}_date`], time: c[`${round}_time`] };
+    if (status === 'scheduled' && c.final_decision === null) {
+      if (attendance === 'cant_attend' || attendance === 'absent') {
+        return { ...base, state: reschedules >= 1 ? 'admin' : attendance, open: true };
+      }
+      if (reschedules > 0) return { ...base, state: 'new_date', open: false };
+    }
+    if (status === 'rejected') {
+      if (attendance === 'not_interested') return { ...base, state: 'not_interested', open: false };
+      if (attendance === 'cant_attend' || attendance === 'absent') return { ...base, state: 'rejected', open: false };
+    }
+    // Moved past the secondary round without missing it: an earlier miss in the primary round is history.
+    if (round === 'secondary' && status !== 'pending') return null;
+  }
+  return null;
 }
 
 /** Moves a selected candidate between the merit and waiting lists. An offer already out is withdrawn from the record. */
@@ -392,13 +551,20 @@ export function panelColumns(stage: 'primary' | 'secondary', panel: InterviewerS
 /** Undoes the latest result, for when HR clicked the wrong thing. Null when there is nothing to undo or the process is locked. */
 export function stepBack(c: PipelineFields): { label: string; patch: Partial<Candidate> } | null {
   if (isLocked(c)) return null;
+  // "Not interested" on the follow-up call is undone back to absent, so the call can be recorded again.
+  const missedBefore = (attendance: Attendance | undefined): Attendance => (attendance === 'not_interested' ? 'absent' : attendance ?? '');
   if (c.secondary_status === 'selected' || c.secondary_status === 'rejected') {
-    return { label: 'Undo final result', patch: { ...CLEAR_DECISION, secondary_status: 'scheduled', selection_category: null } };
+    return {
+      label: 'Undo final result',
+      patch: { ...CLEAR_DECISION, secondary_status: 'scheduled', selection_category: null, secondary_attendance: missedBefore(c.secondary_attendance) },
+    };
   }
+  if (c.secondary_status === 'scheduled' && c.secondary_attendance) return { label: `Undo "${missedText(c.secondary_attendance)}"`, patch: clearMissed('secondary') };
   if (c.secondary_status === 'scheduled') return { label: 'Undo final schedule', patch: { ...CLEAR_SECONDARY } };
   if (c.primary_status === 'selected' || c.primary_status === 'rejected') {
-    return { label: 'Undo primary result', patch: { ...CLEAR_SECONDARY, primary_status: 'scheduled' } };
+    return { label: 'Undo primary result', patch: { ...CLEAR_SECONDARY, primary_status: 'scheduled', primary_attendance: missedBefore(c.primary_attendance) } };
   }
+  if (c.primary_status === 'scheduled' && c.primary_attendance) return { label: `Undo "${missedText(c.primary_attendance)}"`, patch: clearMissed('primary') };
   if (c.message_status === 'message_done') return { label: 'Undo primary schedule', patch: undoSchedule() };
   if (c.call_status !== 'pending') return { label: 'Undo call result', patch: { ...CLEAR_CALL } };
   if (c.screening_status !== 'new') return { label: 'Back to new CV', patch: resetScreening() };
@@ -407,8 +573,18 @@ export function stepBack(c: PipelineFields): { label: string; patch: Partial<Can
 
 // What may be done next, used for bulk actions.
 export const can = {
+  confirmCall: (c: PipelineFields) => c.screening_status === 'shortlisted' && (c.call_status === 'pending' || c.call_status === 'followup'),
   schedulePrimary: (c: PipelineFields) => c.call_status === 'confirm' && c.message_status === 'not_sent',
   scheduleFinal: (c: PipelineFields) => c.primary_status === 'selected' && c.secondary_status === 'pending',
+  /** Scheduled, no result yet, and not already marked as missing it. */
+  markMissed: (c: AttendanceFields) => {
+    const round = scheduledRound(c);
+    return round !== null && attendanceOf(c, round) === '';
+  },
+  newDate: (c: AttendanceFields, isAdmin: boolean) => {
+    const round = scheduledRound(c);
+    return round !== null && canGiveNewDate(c, round, isAdmin);
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -432,6 +608,7 @@ type ProcessFields = PipelineFields &
     | 'primary_date' | 'primary_time' | 'primary_score' | 'secondary_date' | 'secondary_time' | 'secondary_score'
     | 'selection_category' | 'decision_date' | 'joining_date' | 'joining_time'
     | 'joining_call_date' | 'joining_confirmed_date' | 'joining_confirmed_time'
+    | 'primary_reschedules' | 'secondary_reschedules'
   >;
 
 const STEP_LABELS: Record<StepKey, string> = {
@@ -459,10 +636,10 @@ export function processSteps(c: ProcessFields): ProcessStep[] {
         : c.call_status === 'reject' ? `Rejected ${when(c.call_rejected_date ?? c.call_date, c.call_rejected_date ? c.call_rejected_time : c.call_time)}`.trim() : '',
     ],
     ['primary_schedule', c.message_status === 'message_done' ? 'done' : 'current', when(c.primary_date, c.primary_time)],
-    ['primary', interviewState(c.primary_status), scoreText(c.primary_score)],
+    ['primary', interviewState(c.primary_status), missedText(c.primary_attendance) || scoreText(c.primary_score)],
     ['final_schedule', c.secondary_status !== 'pending' ? 'done' : 'current', when(c.secondary_date, c.secondary_time)],
     // A final rejection still means the interview took place; the rejection shows on the decision step.
-    ['final', c.secondary_status === 'scheduled' || c.secondary_status === 'pending' ? 'current' : 'done', scoreText(c.secondary_score)],
+    ['final', c.secondary_status === 'scheduled' || c.secondary_status === 'pending' ? 'current' : 'done', missedText(c.secondary_attendance) || scoreText(c.secondary_score)],
     [
       'decision',
       c.final_decision === 'confirmed' ? 'done' : c.final_decision === 'rejected' ? 'stopped' : 'current',
@@ -573,6 +750,13 @@ export function nextAction(c: ProcessFields): string {
   if (c.call_status === 'followup') return c.followup_on ? `Next: call again ${when(c.followup_on, c.followup_time)}` : 'Next: call again';
   if (c.call_status === 'pending') return 'Next: call the candidate';
   if (c.message_status === 'not_sent') return 'Next: set primary schedule';
+  const round = scheduledRound(c);
+  const missed = round ? attendanceOf(c, round) : '';
+  if (round && (missed === 'cant_attend' || missed === 'absent')) {
+    const name = ROUND_LABELS[round];
+    if (reschedulesOf(c, round) >= 1) return `${name}: missed the new date too, an admin decides`;
+    return missed === 'absent' ? `${name}: absent, next: follow-up call` : `${name}: can't attend, next: give a new date`;
+  }
   if (c.primary_status === 'pending' || c.primary_status === 'scheduled') return when(c.primary_date, c.primary_time) ? `Primary on ${when(c.primary_date, c.primary_time)}` : 'Next: set primary schedule';
   if (c.secondary_status === 'pending') return 'Next: set final schedule';
   if (c.secondary_status === 'scheduled') return `Final on ${when(c.secondary_date, c.secondary_time)}`;

@@ -24,6 +24,10 @@ const KIND_OF_FIELD: Record<string, ActivityKind> = {
   secondary_message_status: 'interview',
   secondary_status: 'interview',
   selection_category: 'interview',
+  primary_attendance: 'interview',
+  primary_reschedules: 'interview',
+  secondary_attendance: 'interview',
+  secondary_reschedules: 'interview',
   final_decision: 'decision',
   joining_status: 'joining',
 };
@@ -57,6 +61,20 @@ export function activityText(event: Pick<CandidateEvent, 'field' | 'from_value' 
       return to === 'message_done' ? 'Set the final interview schedule' : 'Cleared the final interview schedule';
     case 'secondary_status':
       return `Final interview ${INTERVIEW_RESULT[to] ?? to}`;
+    case 'primary_attendance':
+    case 'secondary_attendance': {
+      const round = event.field === 'primary_attendance' ? 'Primary' : 'Final';
+      return {
+        cant_attend: `${round} interview: candidate can't attend`,
+        absent: `${round} interview: candidate absent`,
+        not_interested: `${round} interview: not interested on the follow-up call`,
+      }[to] ?? `${round} interview: missed mark cleared`;
+    }
+    case 'primary_reschedules':
+    case 'secondary_reschedules':
+      return Number(to) > Number(event.from_value ?? 0)
+        ? `${event.field === 'primary_reschedules' ? 'Primary' : 'Final'} interview: new date given`
+        : `${event.field === 'primary_reschedules' ? 'Primary' : 'Final'} interview: new dates cleared`;
     case 'selection_category':
       return to === 'merit' ? 'Put on the merit list' : to === 'waiting' ? 'Put on the waiting list' : 'Taken off the selection list';
     case 'final_decision':

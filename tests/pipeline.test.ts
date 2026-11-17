@@ -4,7 +4,16 @@ import { dateDmy, dateDmyShort, dateOrdinal, dayName, dayShort, duration, time12
 import { sliderBounds } from '../src/lib/filters';
 import {
   afterFinal,
+  bucketSlot,
   bucketStats,
+  can,
+  canGiveNewDate,
+  giveNewDate,
+  isRejected,
+  markMissed,
+  missedInterview,
+  rejectMissed,
+  scheduledRound,
   confirmDecision,
   correctableSteps,
   correctionChanges,
@@ -493,5 +502,91 @@ describe('corrections and joining remarks', () => {
     expect(recordJoiningCall({ callDate: '2026-11-20', callTime: '11:00', confirmedDate: '2026-12-03', confirmedTime: '10:00', remarks: '  Brings release letter ' }))
       .toMatchObject({ joining_remarks: 'Brings release letter', joining_status: 'accepted' });
     expect(recordJoiningCall({ callDate: '2026-11-20', callTime: '11:00', confirmedDate: null, confirmedTime: '' })).not.toHaveProperty('joining_remarks');
+  });
+});
+
+describe('primary interview day on the bucket', () => {
+  const bucket = { primary_date: '2026-11-20', primary_time: '10:30' };
+
+  it('schedules a candidate who confirms for the bucket day, but not for a day already gone', () => {
+    expect(bucketSlot(bucket, '2026-11-16')).toEqual({ date: '2026-11-20', time: '10:30' });
+    expect(bucketSlot(bucket, '2026-11-21')).toBeNull();
+    expect(bucketSlot({ primary_date: null, primary_time: '' }, '2026-11-16')).toBeNull();
+    expect(bucketSlot(undefined, '2026-11-16')).toBeNull();
+  });
+
+  it('turns a confirmation into a scheduled primary interview in one step', () => {
+    const c = fresh({ screening_status: 'shortlisted' });
+    const patch = setCall('confirm', { confirmedDate: '2026-11-16', primarySlot: bucketSlot(bucket, '2026-11-16') });
+    expect(patch).toMatchObject({ call_status: 'confirm', message_status: 'message_done', primary_status: 'scheduled', primary_date: '2026-11-20', primary_time: '10:30' });
+    expect(valid({ ...c, ...patch })).toBe(true);
+    // Without a day on the bucket, it stays as before: the schedule is set next.
+    expect(setCall('confirm', { primarySlot: null })).not.toHaveProperty('message_status');
+    expect(setCall('reject', { primarySlot: bucketSlot(bucket, '2026-11-16') })).toMatchObject({ message_status: 'not_sent' });
+  });
+});
+
+describe('missed interviews', () => {
+  const scheduled = fresh({
+    screening_status: 'shortlisted', call_status: 'confirm', message_status: 'message_done',
+    primary_status: 'scheduled', primary_date: '2026-11-20', primary_time: '10:30',
+    primary_attendance: '', primary_attendance_note: '', primary_reschedules: 0,
+    secondary_attendance: '', secondary_attendance_note: '', secondary_reschedules: 0,
+  });
+
+  it('marks the interview the candidate is scheduled for', () => {
+    expect(scheduledRound(scheduled)).toBe('primary');
+    expect(can.markMissed(scheduled)).toBe(true);
+    const absent = { ...scheduled, ...markMissed('primary', 'absent', '  Phone off ') };
+    expect(absent).toMatchObject({ primary_attendance: 'absent', primary_attendance_note: 'Phone off' });
+    expect(stageOf(absent)).toMatchObject({ label: 'Absent · Primary', tone: 'warning' });
+    expect(nextAction(absent)).toBe('Primary: absent, next: follow-up call');
+    expect(missedInterview(absent)).toMatchObject({ round: 'primary', state: 'absent', open: true, note: 'Phone off' });
+    expect(can.markMissed(absent)).toBe(false);
+    expect(stepBack(absent)?.patch).toEqual({ primary_attendance: '' });
+  });
+
+  it('gives one new date, and leaves the next one to an admin', () => {
+    const cant = { ...scheduled, ...markMissed('primary', 'cant_attend', 'Exam that day') };
+    expect(canGiveNewDate(cant, 'primary', false)).toBe(true);
+    const moved = { ...cant, ...giveNewDate(cant, 'primary', { date: '2026-11-25', time: '11:00' }) };
+    expect(moved).toMatchObject({ primary_status: 'scheduled', primary_date: '2026-11-25', primary_attendance: '', primary_reschedules: 1, primary_attendance_note: 'Exam that day' });
+    expect(missedInterview(moved)).toMatchObject({ state: 'new_date', open: false });
+
+    const missedAgain = { ...moved, ...markMissed('primary', 'absent', '') };
+    expect(canGiveNewDate(missedAgain, 'primary', false)).toBe(false);
+    expect(canGiveNewDate(missedAgain, 'primary', true)).toBe(true);
+    expect(missedInterview(missedAgain)).toMatchObject({ state: 'admin', open: true });
+    expect(nextAction(missedAgain)).toBe('Primary: missed the new date too, an admin decides');
+  });
+
+  it('ends a missed interview as a rejection that says why', () => {
+    const absent = { ...scheduled, ...markMissed('primary', 'absent', '') };
+    const declined = { ...absent, ...rejectMissed(absent, 'primary', 'not_interested', 'Took another job') };
+    expect(declined).toMatchObject({ primary_status: 'rejected', primary_attendance: 'not_interested', primary_attendance_note: 'Took another job' });
+    expect(stageOf(declined)).toMatchObject({ label: 'Rejected · Not interested (Primary)', tone: 'bad' });
+    expect(missedInterview(declined)).toMatchObject({ state: 'not_interested', open: false });
+    // Undoing goes back to absent, so the follow-up call can be recorded again.
+    expect(stepBack(declined)?.patch).toMatchObject({ primary_status: 'scheduled', primary_attendance: 'absent' });
+
+    const byAdmin = { ...absent, ...rejectMissed(absent, 'primary', 'admin', '') };
+    expect(byAdmin).toMatchObject({ primary_status: 'rejected', primary_attendance: 'absent' });
+    expect(missedInterview(byAdmin)).toMatchObject({ state: 'rejected' });
+    expect(isRejected(byAdmin)).toBe(true);
+  });
+
+  it('clears the missed mark once the interview has a result, and on undoing the schedule', () => {
+    const absent = { ...scheduled, ...markMissed('primary', 'absent', '') };
+    expect(setPrimary('selected')).toMatchObject({ primary_attendance: '' });
+    expect({ ...absent, ...stepBack({ ...absent, primary_attendance: '' })!.patch }).toMatchObject({ primary_attendance: '', primary_reschedules: 0, message_status: 'not_sent' });
+  });
+
+  it('works the same way for the final interview', () => {
+    const atFinal = { ...scheduled, primary_status: 'selected' as const, secondary_message_status: 'message_done' as const, secondary_status: 'scheduled' as const, secondary_date: '2026-11-28', secondary_time: '15:00' };
+    expect(scheduledRound(atFinal)).toBe('secondary');
+    const cant = { ...atFinal, ...markMissed('secondary', 'cant_attend', 'Travelling') };
+    expect(stageOf(cant)).toMatchObject({ label: "Can't attend · Final" });
+    expect(missedInterview(cant)).toMatchObject({ round: 'secondary', state: 'cant_attend' });
+    expect(can.newDate(cant, false)).toBe(true);
   });
 });

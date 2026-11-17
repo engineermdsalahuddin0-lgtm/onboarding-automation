@@ -28,7 +28,8 @@ async function start() {
             // Realtime uses a websocket on the same host: https becomes wss, http becomes ws.
             connectSrc: ["'self'", supabaseHost, supabaseHost.replace(/^http/, 'ws'), 'blob:', 'data:'],
             workerSrc: ["'self'", 'blob:'],
-            frameSrc: ["'self'", 'blob:', supabaseHost],
+            // Microsoft Forms: the response summary shown on Candidate Reviews.
+            frameSrc: ["'self'", 'blob:', supabaseHost, 'https://forms.cloud.microsoft', 'https://forms.office.com'],
             objectSrc: ["'none'"],
             baseUri: ["'self'"],
             upgradeInsecureRequests: null,

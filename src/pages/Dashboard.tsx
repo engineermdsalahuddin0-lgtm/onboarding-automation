@@ -1,11 +1,13 @@
 import {
   Calendar,
   CalendarClock,
+  CalendarX,
   FileUser,
   PhoneCall,
   PhoneForwarded,
   Send,
   UserCheck,
+  UserX,
   type LucideIcon,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -14,7 +16,7 @@ import { Avatar, Button, Card, EmptyState, HoverTooltip, InsightTile, PageHeader
 import { BarList, CountTable, DataTable, DetailDialog, Figures, InterviewCalendar, Section, type InterviewEvent } from '../components/DashboardDetails';
 import { classNames, dateMedium, dateTime, dayMonth, daysBetween, duration, isoDate, time12, todayIso, whenText } from '../lib/format';
 import { placeText } from '../lib/org';
-import { afterFinal, bucketStats, CATEGORY_LABELS, fillsVacancy, isActive, isRejected, JOINING, joiningWhen, matchesStageFilter, nextAction, recommendationCount, stageOf, type StageFilter } from '../lib/pipeline';
+import { afterFinal, bucketStats, CATEGORY_LABELS, fillsVacancy, isActive, isRejected, JOINING, joiningWhen, matchesStageFilter, MISSED_LABELS, missedInterview, nextAction, recommendationCount, ROUND_LABELS, stageOf, type Missed, type MissedState, type StageFilter } from '../lib/pipeline';
 import { byNewest, daysOpen, isOpenRequisition, requisitionFigures } from '../lib/requisitions';
 import { CorrectionRequestsCard } from '../components/Corrections';
 import { RequisitionDetails, STATUS_TONE } from './Requisitions';
@@ -30,8 +32,8 @@ const FUNNEL_COLORS = ['#7cc25a', '#6baa4c', '#59913f', '#487931', '#3f6d2a', '#
 
 // The stages in process order, for the "where they stand" breakdown.
 const STAGE_ORDER = [
-  'New CV', 'Shortlisted', 'Call follow-up', 'Call confirmed', 'Primary scheduled', 'Primary selected',
-  'Final scheduled', 'Final selected', 'Confirmed', 'Joining confirmed', 'Joined', 'Did not confirm', 'Rejected',
+  'New CV', 'Shortlisted', 'Call follow-up', 'Call confirmed', 'Primary scheduled', "Can't attend · Primary", 'Absent · Primary', 'Primary selected',
+  'Final scheduled', "Can't attend · Final", 'Absent · Final', 'Final selected', 'Confirmed', 'Joining confirmed', 'Joined', 'Did not confirm', 'Rejected',
 ];
 
 const percent = (part: number, whole: number) => (whole ? Math.round((part / whole) * 100) : 0);
@@ -305,9 +307,15 @@ function buildWorkList(candidates: Candidate[], buckets: CvBucket[], only?: (key
 
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
+  // Someone marked as missing the interview has no result to enter: their next step is listed below.
   add('overdue-result', CalendarClock, 'all',
-    (c) => (c.primary_status === 'scheduled' && c.primary_date !== null && c.primary_date < today) || (c.secondary_status === 'scheduled' && c.secondary_date !== null && c.secondary_date < today),
+    (c) => (c.primary_status === 'scheduled' && !c.primary_attendance && c.primary_date !== null && c.primary_date < today)
+      || (c.secondary_status === 'scheduled' && !c.secondary_attendance && c.secondary_date !== null && c.secondary_date < today),
     (n, name) => `${plural(n, 'interview result')} overdue: ${name}`, true);
+  const missedIn = (state: string) => (c: Candidate) => missedInterview(c)?.state === state;
+  add('missed-admin', UserX, 'all', missedIn('admin'), (n, name) => `${n} missed the new interview date too, admin to decide: ${name}`, true);
+  add('missed-absent', PhoneForwarded, 'all', missedIn('absent'), (n, name) => `${plural(n, 'follow-up call')} for absent candidates: ${name}`, true);
+  add('missed-cant', CalendarX, 'all', missedIn('cant_attend'), (n, name) => `${plural(n, 'new interview date')} to give: ${name}`);
   add('followup', PhoneForwarded, 'calling',
     (c) => c.call_status === 'followup' && (!c.followup_on || c.followup_on <= today),
     (n, name) => `${plural(n, 'follow-up call')} due: ${name}`, true);
@@ -450,6 +458,54 @@ function HandedToMe({ items }: { items: Candidate[] }) {
   );
 }
 
+// Open cases first, most urgent at the top; then the ones already settled.
+const MISSED_ORDER: MissedState[] = ['admin', 'absent', 'cant_attend', 'new_date', 'not_interested', 'rejected'];
+
+/** Everyone who missed an interview: can't attend, absent, on a new date, or rejected for it. */
+function MissedInterviews({ items, designationOf }: { items: Candidate[]; designationOf: (c: Candidate) => string }) {
+  const [showAll, setShowAll] = useState(false);
+  const rows = useMemo(
+    () => items
+      .map((c) => ({ c, missed: missedInterview(c) }))
+      .filter((row): row is { c: Candidate; missed: Missed } => row.missed !== null)
+      .sort((a, b) => MISSED_ORDER.indexOf(a.missed.state) - MISSED_ORDER.indexOf(b.missed.state) || (a.missed.date ?? '').localeCompare(b.missed.date ?? '')),
+    [items],
+  );
+  if (rows.length === 0) {
+    return <p className="py-4 text-center text-sm text-ink-muted">No one has missed an interview. Mark Absent or Can't attend on the candidate's card, or for several at once in the bucket.</p>;
+  }
+  const counts = MISSED_ORDER.map((state) => ({ state, count: rows.filter((row) => row.missed.state === state).length })).filter(({ count }) => count > 0);
+  const shown = showAll ? rows : rows.slice(0, 10);
+  return (
+    <>
+      <p className="mb-3 flex flex-wrap gap-2">
+        {counts.map(({ state, count }) => <StatusBadge key={state} tone={MISSED_LABELS[state].tone}>{count} · {MISSED_LABELS[state].label}</StatusBadge>)}
+      </p>
+      <ul className="-mx-2 divide-y divide-line">
+        {shown.map(({ c, missed }) => (
+          <li key={c.id}>
+            <Link to={{ search: `?candidate=${c.id}` }} className="flex flex-wrap items-start gap-x-3 gap-y-1 rounded-lg px-2 py-2 text-sm hover:bg-hover">
+              <span className="min-w-48 flex-1">
+                <span className="block font-medium">{c.full_name} <span className="font-normal text-ink-muted">· {designationOf(c)}</span></span>
+                <span className="block text-xs text-ink-soft">
+                  {ROUND_LABELS[missed.round]} interview {missed.state === 'new_date' ? 'now on' : 'on'} <span className="tabular">{whenText(missed.date, missed.time)}</span>
+                  {missed.note && <> · "{missed.note}"</>}
+                </span>
+              </span>
+              <StatusBadge tone={MISSED_LABELS[missed.state].tone}>{MISSED_LABELS[missed.state].label}</StatusBadge>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {rows.length > 10 && (
+        <button type="button" className="mt-2 text-xs text-ink-muted underline hover:text-ink" onClick={() => setShowAll(!showAll)}>
+          {showAll ? 'Show fewer' : `and ${rows.length - 10} more`}
+        </button>
+      )}
+    </>
+  );
+}
+
 const PROCESS_EVENTS = (n: AppNotification) => !['new_cvs', 'posting', 'handover'].includes(n.event);
 const INCOMING_EVENTS = (n: AppNotification) => ['new_cvs', 'posting', 'handover'].includes(n.event);
 
@@ -505,8 +561,9 @@ export function DashboardPage() {
   const interviews = useMemo(() => {
     const list: { c: Candidate; date: string; time: string; round: string }[] = [];
     for (const c of inDepartment) {
-      if (c.primary_status === 'scheduled' && c.primary_date && c.primary_date >= today) list.push({ c, date: c.primary_date, time: c.primary_time, round: 'Primary' });
-      if (c.secondary_status === 'scheduled' && c.secondary_date && c.secondary_date >= today) list.push({ c, date: c.secondary_date, time: c.secondary_time, round: 'Final' });
+      // Someone who said they cannot come, or did not come, is not expected until they have a new date.
+      if (c.primary_status === 'scheduled' && !c.primary_attendance && c.primary_date && c.primary_date >= today) list.push({ c, date: c.primary_date, time: c.primary_time, round: 'Primary' });
+      if (c.secondary_status === 'scheduled' && !c.secondary_attendance && c.secondary_date && c.secondary_date >= today) list.push({ c, date: c.secondary_date, time: c.secondary_time, round: 'Final' });
     }
     return list.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
   }, [inDepartment, today]);
@@ -532,23 +589,27 @@ export function DashboardPage() {
   // Every interview with a day, for the calendar: still to come, overdue, or held with its result.
   const interviewEvents = useMemo(() => {
     const list: InterviewEvent[] = [];
-    const add = (c: Candidate, round: 'Primary' | 'Final', date: string | null, time: string, status: string, score: number | null) => {
+    const MISSED: Record<string, string> = { cant_attend: "Can't attend", absent: 'Absent', not_interested: 'Absent · not interested' };
+    const add = (c: Candidate, round: 'Primary' | 'Final', date: string | null, time: string, status: string, score: number | null, attendance: string) => {
       if (!date || status === 'pending') return;
       const held = status === 'selected' || status === 'rejected';
+      const missed = MISSED[attendance];
       list.push({
         key: `${c.id}-${round}`,
         candidate: c,
         date,
         time,
         round,
-        state: held ? 'held' : date < today ? 'overdue' : 'scheduled',
-        result: held ? `${status === 'selected' ? 'Selected' : 'Rejected'}${score !== null ? ` · ${score}/10` : ''}` : date < today ? 'Result not recorded yet' : 'Scheduled',
+        state: held || missed ? 'held' : date < today ? 'overdue' : 'scheduled',
+        result: missed
+          ? `${missed}${status === 'rejected' ? ' · Rejected' : ''}`
+          : held ? `${status === 'selected' ? 'Selected' : 'Rejected'}${score !== null ? ` · ${score}/10` : ''}` : date < today ? 'Result not recorded yet' : 'Scheduled',
         position: bucketById.get(c.bucket_id)?.designation ?? '',
       });
     };
     for (const c of inDepartment) {
-      add(c, 'Primary', c.primary_date, c.primary_time, c.primary_status, c.primary_score);
-      add(c, 'Final', c.secondary_date, c.secondary_time, c.secondary_status, c.secondary_score);
+      add(c, 'Primary', c.primary_date, c.primary_time, c.primary_status, c.primary_score, c.primary_attendance ?? '');
+      add(c, 'Final', c.secondary_date, c.secondary_time, c.secondary_status, c.secondary_score, c.secondary_attendance ?? '');
     }
     return list;
   }, [inDepartment, bucketById, today]);
@@ -648,6 +709,7 @@ export function DashboardPage() {
   const reviewSeconds = reviewedPeople.reduce((sum, c) => sum + c.review_seconds, 0);
   const reviewCount = reviewedPeople.length;
   const recentBuckets = buckets.filter((b) => b.status === 'Open' && (!department || b.department === department)).slice(0, 4);
+  const missedCount = inDepartment.filter((c) => missedInterview(c) !== null).length;
 
   return (
     <>
@@ -909,6 +971,10 @@ export function DashboardPage() {
 
         <Card title="CVs per week"><Inflow items={inDepartment} positionOf={designationOf} /></Card>
       </div>
+
+      <Card title={`Missed interviews (${missedCount})`} className="mt-4">
+        <MissedInterviews items={inDepartment} designationOf={designationOf} />
+      </Card>
 
       <Card
         tour="dash-shortlisted"

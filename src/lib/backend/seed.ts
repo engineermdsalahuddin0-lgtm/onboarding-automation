@@ -105,6 +105,12 @@ const BASE: Omit<Candidate, 'id' | 'bucket_id' | 'full_name' | 'phone' | 'email'
   secondary_score: null,
   secondary_feedback: '',
   secondary_panel: [],
+  primary_attendance: '',
+  primary_attendance_note: '',
+  primary_reschedules: 0,
+  secondary_attendance: '',
+  secondary_attendance_note: '',
+  secondary_reschedules: 0,
   selection_category: null,
   final_decision: null,
   decision_date: null,
@@ -293,6 +299,7 @@ export function buildDemoData() {
 
   const bucket = (
     id: string, code: string, requisitionId: string | null, title: string, department: string, color: string, daysAgo: number,
+    interview: [number, string],
   ): CvBucket => ({
     id,
     code,
@@ -308,12 +315,14 @@ export function buildDemoData() {
     unit: 'CHO',
     section: department === 'HR & Admin' ? 'HR' : '',
     subsection: '',
+    primary_date: daysFromNow(interview[0]),
+    primary_time: interview[1],
   });
 
   const cv_buckets: CvBucket[] = [
-    bucket('bkt-1', 'demo-jrexec', 'req-1', 'Jr. Executive', 'HR & Admin', 'green', 11),
-    bucket('bkt-2', 'demo-hrtech', 'req-2', 'HR Tech & Automation Specialist', 'HR & Admin', 'blue', 8),
-    bucket('bkt-3', 'demo-merch', 'req-3', 'Merchandiser', 'Merchandising', 'amber', 2),
+    bucket('bkt-1', 'demo-jrexec', 'req-1', 'Jr. Executive', 'HR & Admin', 'green', 11, [2, '11:00']),
+    bucket('bkt-2', 'demo-hrtech', 'req-2', 'HR Tech & Automation Specialist', 'HR & Admin', 'blue', 8, [0, '15:00']),
+    bucket('bkt-3', 'demo-merch', 'req-3', 'Merchandiser', 'Merchandising', 'amber', 2, [6, '10:30']),
   ];
 
   let serial = 0;

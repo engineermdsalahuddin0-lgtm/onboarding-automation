@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS: Omit<Settings, 'id'> = {
   upload_max_files: 1000,
   upload_batch_size: 50,
   upload_batch_pause: 10,
+  review_form_url: '',
   org_structure: DEFAULT_ORG_STRUCTURE,
 };
 

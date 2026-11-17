@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, Briefcase, Calendar, Check, ChevronDown, Copy, Download, ExternalLink, FileText, House, Link2, Mail, MapPin, MessageSquare, Pencil, Phone, Search, Trash2, Upload, Users, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Briefcase, Calendar, CalendarX, Check, ChevronDown, Copy, Download, ExternalLink, FileText, House, Link2, Mail, MapPin, MessageSquare, Pencil, Phone, PhoneCall, Search, Trash2, Upload, UserX, Users, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { BucketFormDialog } from '../components/BucketForm';
@@ -6,7 +6,7 @@ import { DeleteBucketDialog } from '../components/DeleteBucketDialog';
 import { BulkUploadDialog } from '../components/BulkUpload';
 import { HelpTip } from '../components/Guide';
 import { HandoverDialog } from '../components/HandoverDialog';
-import { copyText, ScheduleDialog, ScreeningRejectDialog } from '../components/PipelineDialogs';
+import { ConfirmCallsDialog, copyText, MissedDialog, NewDateDialog, ScheduleDialog, ScreeningRejectDialog } from '../components/PipelineDialogs';
 import { ProcessMini } from '../components/ProcessBar';
 import { ActionIcon, Avatar, Button, Confirm, EmptyState, errorText, HoverTooltip, PageHeader, RangeSlider, RecommendationStars, Select, SortHeader, StatusBadge, TH, THEAD, TooltipList, useToast } from '../components/ui';
 import { backend } from '../lib/backend';
@@ -23,6 +23,9 @@ type SortColumn = 'name' | 'experience' | 'received' | 'stage' | 'review';
 
 type Modal =
   | { kind: 'schedule'; candidates: Candidate[]; stage: 'primary' | 'secondary' }
+  | { kind: 'confirmCalls'; candidates: Candidate[] }
+  | { kind: 'missed'; candidates: Candidate[]; attendance: 'cant_attend' | 'absent' }
+  | { kind: 'newDate'; candidates: Candidate[] }
   | { kind: 'reject'; candidates: Candidate[] }
   | { kind: 'rejectOne'; candidate: Candidate }
   | { kind: 'handover'; candidates: Candidate[] }
@@ -35,12 +38,14 @@ const STAGES: { value: StageFilter; label: string; help: string; action?: string
   { value: 'new', label: 'New CVs', help: 'CVs not reviewed yet. Open one, read it, then select or reject.' },
   { value: 'calling', label: 'Shortlisted', action: 'To call', help: 'Shortlisted from their CV, waiting for your phone call or a follow-up.' },
   { value: 'messaging', label: 'To schedule', help: 'Confirmed on the call, waiting for a primary interview date and time.' },
-  { value: 'primary', label: 'Primary', help: 'Primary interview scheduled, waiting for the result.' },
-  { value: 'secondary', label: 'Final', help: 'Passed the primary interview: final schedule or result still to come.' },
+  { value: 'primary', label: 'Primary', help: 'Primary interview scheduled, waiting for the result. Also those who missed it: tick them to mark Absent or Can\'t attend, or give a new date.' },
+  { value: 'secondary', label: 'Final', help: 'Passed the primary interview: final schedule or result still to come, including those who missed the final interview.' },
   { value: 'decision', label: 'Decision', help: 'Passed the final interview, waiting for the confirmation letter or a rejection.' },
   { value: 'confirmed', label: 'Confirmed', help: 'Confirmation letter sent. The process is locked.' },
   { value: 'rejected', label: 'Rejected', help: 'Stopped at some step. The card shows where and why.' },
 ];
+
+const MISSED_EXPORT: Record<string, string> = { cant_attend: "Can't attend", absent: 'Absent', not_interested: 'Not interested' };
 
 const EXPORT_COLUMNS: ExportColumn<Candidate>[] = [
   { header: 'Name', value: (c) => c.full_name, width: 28 },
@@ -65,9 +70,15 @@ const EXPORT_COLUMNS: ExportColumn<Candidate>[] = [
   { header: 'Candidate rejected on', value: (c) => whenText(c.call_rejected_date, c.call_rejected_time), width: 22 },
   { header: 'Call note', value: (c) => c.call_note, width: 30 },
   { header: 'Primary on', value: (c) => whenText(c.primary_date, c.primary_time), width: 22 },
+  { header: 'Primary missed', value: (c) => MISSED_EXPORT[c.primary_attendance] ?? '' },
+  { header: 'Primary new dates', value: (c) => c.primary_reschedules || '' },
+  { header: 'Primary missed remarks', value: (c) => c.primary_attendance_note, width: 30 },
   { header: 'Primary score', value: (c) => c.primary_score },
   { header: 'Primary interviewers', value: (c) => c.primary_interviewer, width: 30 },
   { header: 'Final on', value: (c) => whenText(c.secondary_date, c.secondary_time), width: 22 },
+  { header: 'Final missed', value: (c) => MISSED_EXPORT[c.secondary_attendance] ?? '' },
+  { header: 'Final new dates', value: (c) => c.secondary_reschedules || '' },
+  { header: 'Final missed remarks', value: (c) => c.secondary_attendance_note, width: 30 },
   { header: 'Final score', value: (c) => c.secondary_score },
   { header: 'Final interviewers', value: (c) => c.secondary_interviewer, width: 30 },
   { header: 'Recommendations', value: (c) => recommendationCount(c) },
@@ -461,8 +472,13 @@ export function BucketDetailPage() {
   const maxSource = stats.sources[0]?.count ?? 1;
   // Bulk actions follow the desks: screening for new CVs, the process team for the schedules.
   const canShortlist = canScreen ? selected.filter((c) => c.screening_status === 'new') : [];
+  const canConfirmCall = canProcess ? selected.filter(can.confirmCall) : [];
   const canSchedulePrimary = canProcess ? selected.filter(can.schedulePrimary) : [];
   const canScheduleFinal = canProcess ? selected.filter(can.scheduleFinal) : [];
+  const canMarkMissed = canProcess ? selected.filter(can.markMissed) : [];
+  const canNewDate = canProcess ? selected.filter((c) => can.newDate(c, isAdmin)) : [];
+  // Each button acts only on the people it fits; say how many of the selection that leaves out.
+  const skipped = (eligible: Candidate[]) => (eligible.length < selected.length ? ` (${selected.length - eligible.length} skipped)` : '');
   const hasProcessTeam = processTeam(team).some((p) => p.id !== user?.id);
   const help = STAGES.find((stage) => stage.value === filter)?.help;
 
@@ -492,6 +508,10 @@ export function BucketDetailPage() {
           <>
             {[placeText({ unit: bucket.unit, department: bucket.department, section: bucket.section, subsection: bucket.subsection }), bucket.company].filter(Boolean).join(' · ')}
             {' · '}Created {dateMedium(bucket.created_at)}
+            {' · '}
+            {bucket.primary_date
+              ? <>Primary interview <strong className="tabular font-medium text-ink">{whenText(bucket.primary_date, bucket.primary_time)}</strong></>
+              : <span className="text-amber-900">No primary interview date yet{canWrite ? ' (edit the bucket to add it)' : ''}</span>}
             {requisition && <> · <Link className="underline" to="/requisitions">{requisition.ref_no}</Link> ({requisition.vacancies} vacanc{requisition.vacancies === 1 ? 'y' : 'ies'})</>}
           </>
         }
@@ -664,8 +684,20 @@ export function BucketDetailPage() {
               </Button>
             )}
             {canShortlist.length > 0 && <Button size="sm" icon={X} onClick={() => setModal({ kind: 'reject', candidates: canShortlist })}>Reject {canShortlist.length}</Button>}
-            {canSchedulePrimary.length > 0 && <Button size="sm" icon={Calendar} onClick={() => setModal({ kind: 'schedule', candidates: canSchedulePrimary, stage: 'primary' })}>Set primary schedule for {canSchedulePrimary.length}</Button>}
-            {canScheduleFinal.length > 0 && <Button size="sm" icon={Calendar} onClick={() => setModal({ kind: 'schedule', candidates: canScheduleFinal, stage: 'secondary' })}>Set final schedule for {canScheduleFinal.length}</Button>}
+            {canConfirmCall.length > 0 && (
+              <Button size="sm" icon={PhoneCall} title="Record that they confirmed on the call. With a primary interview day on this bucket, they are scheduled for it too." onClick={() => setModal({ kind: 'confirmCalls', candidates: canConfirmCall })}>
+                Call confirmed for {canConfirmCall.length}{skipped(canConfirmCall)}
+              </Button>
+            )}
+            {canSchedulePrimary.length > 0 && <Button size="sm" icon={Calendar} onClick={() => setModal({ kind: 'schedule', candidates: canSchedulePrimary, stage: 'primary' })}>Set primary schedule for {canSchedulePrimary.length}{skipped(canSchedulePrimary)}</Button>}
+            {canScheduleFinal.length > 0 && <Button size="sm" icon={Calendar} onClick={() => setModal({ kind: 'schedule', candidates: canScheduleFinal, stage: 'secondary' })}>Set final schedule for {canScheduleFinal.length}{skipped(canScheduleFinal)}</Button>}
+            {canMarkMissed.length > 0 && (
+              <>
+                <Button size="sm" icon={CalendarX} title="Told you beforehand they cannot come" onClick={() => setModal({ kind: 'missed', candidates: canMarkMissed, attendance: 'cant_attend' })}>Can't attend {canMarkMissed.length}{skipped(canMarkMissed)}</Button>
+                <Button size="sm" icon={UserX} title="Did not come to the interview" onClick={() => setModal({ kind: 'missed', candidates: canMarkMissed, attendance: 'absent' })}>Absent {canMarkMissed.length}{skipped(canMarkMissed)}</Button>
+              </>
+            )}
+            {canNewDate.length > 0 && <Button size="sm" icon={Calendar} onClick={() => setModal({ kind: 'newDate', candidates: canNewDate })}>New date for {canNewDate.length}{skipped(canNewDate)}</Button>}
             <Button size="sm" icon={Copy} onClick={() => void copyText(selected.map((c) => c.phone).filter(Boolean).join(', ')).then(() => toast('Mobile numbers copied.'))}>Copy mobiles</Button>
           </div>
         )}
@@ -737,6 +769,9 @@ export function BucketDetailPage() {
       </div>
 
       {modal?.kind === 'schedule' && <ScheduleDialog candidates={modal.candidates} stage={modal.stage} onClose={() => { setModal(null); setSelection(new Set()); }} />}
+      {modal?.kind === 'confirmCalls' && <ConfirmCallsDialog candidates={modal.candidates} onClose={() => { setModal(null); setSelection(new Set()); }} />}
+      {modal?.kind === 'missed' && <MissedDialog candidates={modal.candidates} attendance={modal.attendance} onClose={() => { setModal(null); setSelection(new Set()); }} />}
+      {modal?.kind === 'newDate' && <NewDateDialog candidates={modal.candidates} onClose={() => { setModal(null); setSelection(new Set()); }} />}
       {modal?.kind === 'reject' && (
         <Confirm
           danger

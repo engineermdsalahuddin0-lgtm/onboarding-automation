@@ -85,6 +85,8 @@ export interface Settings {
   upload_batch_size: number;
   /** Seconds of break between two batches. */
   upload_batch_pause: number;
+  /** The Microsoft Forms "summary link" shown on Candidate Reviews. Staff only; never in the code. */
+  review_form_url: string;
   /** The units, each with its departments, sections and subsections. */
   org_structure: OrgUnit[];
   updated_at?: string;
@@ -213,6 +215,9 @@ export interface CvBucket {
   unit: string;
   section: string;
   subsection: string;
+  /** The primary interview day and time, set when the bucket is made. A candidate who confirms on the call is scheduled for it. */
+  primary_date: string | null;
+  primary_time: string;
 }
 
 export interface EducationItem {
@@ -248,6 +253,12 @@ export type ScreeningStatus = 'new' | 'shortlisted' | 'rejected';
 export type CallStatus = 'pending' | 'confirm' | 'followup' | 'reject';
 export type MessageStatus = 'not_sent' | 'message_done';
 export type InterviewStatus = 'pending' | 'scheduled' | 'selected' | 'rejected';
+/**
+ * A scheduled interview the candidate missed. cant_attend: told HR beforehand. absent: did not come and did
+ * not say, so HR makes a follow-up call. not_interested: on that call the candidate said no (the interview is
+ * then rejected). Empty: nothing missed, or a 2nd date was given.
+ */
+export type Attendance = '' | 'cant_attend' | 'absent' | 'not_interested';
 export type JoiningStatus = 'pending' | 'offer_sent' | 'accepted' | 'joined' | 'declined';
 export type ParseMethod = 'manual' | 'rules' | 'ai' | 'form';
 export type SelectionCategory = 'merit' | 'waiting';
@@ -346,6 +357,11 @@ export interface Candidate extends CandidateProfileFields {
   primary_score: number | null;
   primary_feedback: string;
   primary_panel: InterviewerScore[];
+  primary_attendance: Attendance;
+  /** Why the candidate missed it, or what they said on the follow-up call. */
+  primary_attendance_note: string;
+  /** How many times a new date was given after a missed interview. Only an admin can give more than one. */
+  primary_reschedules: number;
 
   secondary_message_status: MessageStatus;
   secondary_message_sent_at: string | null;
@@ -356,6 +372,9 @@ export interface Candidate extends CandidateProfileFields {
   secondary_score: number | null;
   secondary_feedback: string;
   secondary_panel: InterviewerScore[];
+  secondary_attendance: Attendance;
+  secondary_attendance_note: string;
+  secondary_reschedules: number;
   selection_category: SelectionCategory | null;
 
   /** Set once a confirmation letter goes out or the candidate is rejected. From then on the process is locked. */

@@ -5,23 +5,30 @@ import { DOCUMENT_CHECKLIST } from '../lib/defaults';
 import { downloadCsv } from '../lib/export';
 import { classNames, nowTime, todayIso, whenText } from '../lib/format';
 import {
+  attendanceOf,
+  bucketSlot,
   confirmDecision,
+  giveNewDate,
   JOINING,
+  markMissed,
   normalizePhone,
   panelColumns,
   recordJoiningCall,
   rejectDecision,
+  rejectMissed,
   rejectScreening,
   REVIEW_CLOSES,
+  scheduledRound,
   scheduleFinal,
   schedulePrimary,
   setCall,
   setPrimary,
   setSecondary,
+  type Slot,
 } from '../lib/pipeline';
 import { useStore } from '../lib/store';
 import { candidateVars, renderTemplate, slotVars } from '../lib/templates';
-import type { Candidate, CallStatus, InterviewerScore, JoiningStatus, SelectionCategory } from '../types';
+import type { Candidate, CallStatus, CvBucket, InterviewerScore, JoiningStatus, SelectionCategory } from '../types';
 import { Button, DateTimeField, Dialog, errorText, IconButton, Select, TextArea, TextInput, useToast } from './ui';
 
 export function copyText(text: string) {
@@ -75,9 +82,10 @@ export function ScreeningRejectDialog({ candidate, onClose }: { candidate: Candi
 
 /** HR records the call, and what the candidate answered: confirmed, rejected, or call again. */
 export function CallDialog({ candidate, status, onClose }: { candidate: Candidate; status: Exclude<CallStatus, 'pending'>; onClose: () => void }) {
-  const { user, updateCandidate } = useStore();
+  const { user, buckets, updateCandidate } = useStore();
   const toast = useToast();
   const today = todayIso();
+  const bucket = buckets.find((b) => b.id === candidate.bucket_id);
   const [note, setNote] = useState(candidate.call_note);
   const [followupOn, setFollowupOn] = useState(candidate.followup_on ?? '');
   const [followupTime, setFollowupTime] = useState(candidate.followup_time);
@@ -93,7 +101,13 @@ export function CallDialog({ candidate, status, onClose }: { candidate: Candidat
     reject: `Record rejection: ${candidate.full_name}`,
   };
   const actions = { confirm: 'Save confirmation', followup: 'Save follow-up', reject: 'Save rejection' };
-  const done = { confirm: 'Saved. Next: set the primary schedule.', followup: 'Follow-up saved.', reject: 'Saved. Moved to Rejected.' };
+  // The bucket's primary interview, when it has one still to come: confirming schedules the candidate for it.
+  const slot = status === 'confirm' ? bucketSlot(bucket, answerDate) : null;
+  const done = {
+    confirm: slot ? `Saved. Primary interview on ${whenText(slot.date, slot.time)}.` : 'Saved. Next: set the primary schedule.',
+    followup: 'Follow-up saved.',
+    reject: 'Saved. Moved to Rejected.',
+  };
   const answerLabel = status === 'confirm' ? 'Candidate confirmed on' : 'Candidate rejected on';
 
   async function submit(event: FormEvent) {
@@ -111,6 +125,7 @@ export function CallDialog({ candidate, status, onClose }: { candidate: Candidat
         confirmedTime: answerTime,
         rejectedDate: answerDate,
         rejectedTime: answerTime,
+        primarySlot: slot,
       }));
       toast(`${candidate.full_name}: ${done[status]}`);
       onClose();
@@ -155,6 +170,261 @@ export function CallDialog({ candidate, status, onClose }: { candidate: Candidat
         <div className="sm:col-span-2">
           <TextArea label="Call note" rows={3} autoFocus value={note} onChange={(e) => setNote(e.target.value)} placeholder="What did the candidate say?" />
         </div>
+        {status === 'confirm' && <PrimarySlotNote bucket={bucket} slot={slot} />}
+      </form>
+    </Dialog>
+  );
+}
+
+/** Says what confirming does with the bucket's primary interview day. */
+function PrimarySlotNote({ bucket, slot, many = false }: { bucket: CvBucket | undefined; slot: Slot | null; many?: boolean }) {
+  const who = many ? 'They are' : 'The candidate is';
+  return (
+    <p className={classNames('rounded-lg px-3 py-2 text-sm sm:col-span-2', slot ? 'bg-brand-50 text-brand-900' : 'bg-amber-50 text-amber-950')}>
+      {slot
+        ? <>{who} scheduled for the primary interview set on this bucket: <strong className="tabular">{whenText(slot.date, slot.time)}</strong>. Tell them on the call.</>
+        : bucket?.primary_date
+          ? <>The primary interview set on this bucket ({whenText(bucket.primary_date, bucket.primary_time)}) has passed. Set the schedule next, or change the date on the bucket.</>
+          : <>This bucket has no primary interview date. Set the schedule next, or add the date to the bucket.</>}
+    </p>
+  );
+}
+
+/** Several candidates confirmed on their calls, recorded together. With a primary interview on the bucket, they are scheduled for it too. */
+export function ConfirmCallsDialog({ candidates, onClose }: { candidates: Candidate[]; onClose: () => void }) {
+  const { user, buckets, updateCandidates } = useStore();
+  const toast = useToast();
+  const today = todayIso();
+  const [callDate, setCallDate] = useState(today);
+  const [callTime, setCallTime] = useState(nowTime());
+  const [answerDate, setAnswerDate] = useState(today);
+  const [answerTime, setAnswerTime] = useState(nowTime());
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  // A bulk action works inside one bucket, so they share its interview day.
+  const bucket = buckets.find((b) => b.id === candidates[0]?.bucket_id);
+  const slot = bucketSlot(bucket, answerDate);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const done = await updateCandidates(candidates.map((c) => c.id), (c) => setCall('confirm', {
+        ...(note.trim() ? { note: note.trim() } : {}),
+        by: user?.full_name ?? '',
+        callDate,
+        callTime,
+        confirmedDate: answerDate,
+        confirmedTime: answerTime,
+        primarySlot: bucketSlot(buckets.find((b) => b.id === c.bucket_id), answerDate),
+      }));
+      toast(slot ? `${done} confirmed and scheduled for ${whenText(slot.date, slot.time)}.` : `${done} confirmed. Next: set the primary schedule.`);
+      onClose();
+    } catch (error) {
+      toast(errorText(error), 'bad');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={`Record confirmation: ${candidates.length} candidate${candidates.length === 1 ? '' : 's'}`}
+      description={candidates.map((c) => c.full_name).join(', ')}
+      onClose={onClose}
+      width="max-w-2xl"
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" form="confirm-calls-form" variant="primary" loading={busy}>Save confirmation for {candidates.length}</Button>
+        </>
+      }
+    >
+      <form id="confirm-calls-form" onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
+        <DateTimeField label="Called on" required max={today} date={callDate} time={callTime} onDate={setCallDate} onTime={setCallTime} />
+        <DateTimeField label="Candidates confirmed on" required min={callDate} max={today} date={answerDate} time={answerTime} onDate={setAnswerDate} onTime={setAnswerTime} />
+        <div className="sm:col-span-2">
+          <TextArea label="Call note (optional, same for all)" rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+        </div>
+        <PrimarySlotNote bucket={bucket} slot={slot} many />
+      </form>
+    </Dialog>
+  );
+}
+
+/** The candidate told HR they cannot come, or did not come. One or several at once, each in the interview they are scheduled for. */
+export function MissedDialog({ candidates, attendance, onClose }: { candidates: Candidate[]; attendance: 'cant_attend' | 'absent'; onClose: () => void }) {
+  const { updateCandidates } = useStore();
+  const toast = useToast();
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const only = candidates.length === 1 ? candidates[0] : undefined;
+  const absent = attendance === 'absent';
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const done = await updateCandidates(candidates.map((c) => c.id), (c) => {
+        const round = scheduledRound(c);
+        return round ? markMissed(round, attendance, note) : {};
+      });
+      toast(`${only ? only.full_name : `${done} candidates`}: saved as ${absent ? 'absent. Next: the follow-up call.' : "can't attend. Next: give a new date."}`);
+      onClose();
+    } catch (error) {
+      toast(errorText(error), 'bad');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={`${absent ? 'Absent from the interview' : "Can't attend the interview"}: ${only ? only.full_name : `${candidates.length} candidates`}`}
+      description={absent ? 'Did not come and did not tell HR. Next comes a follow-up call.' : 'Told HR beforehand they cannot come. Next comes a new date.'}
+      onClose={onClose}
+      width="max-w-lg"
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" form="missed-form" variant="primary" loading={busy}>Save{only ? '' : ` for ${candidates.length}`}</Button>
+        </>
+      }
+    >
+      <form id="missed-form" onSubmit={submit}>
+        <TextArea
+          label={absent ? 'Remarks (optional)' : 'Reason'}
+          required={!absent}
+          rows={3}
+          autoFocus
+          maxLength={1000}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder={absent ? 'e.g. Phone was off; no reply on WhatsApp' : 'e.g. Exam on that day, asked for next week'}
+          hint="Shown on the card and on the dashboard."
+        />
+      </form>
+    </Dialog>
+  );
+}
+
+/**
+ * A new date after a missed interview: for someone who could not come, or who said on the follow-up call that
+ * they will come. Given once by the process team; an admin can give another.
+ */
+export function NewDateDialog({ candidates, onClose }: { candidates: Candidate[]; onClose: () => void }) {
+  const { updateCandidates } = useStore();
+  const toast = useToast();
+  const only = candidates.length === 1 ? candidates[0] : undefined;
+  const followUp = candidates.some((c) => { const round = scheduledRound(c); return round !== null && attendanceOf(c, round) === 'absent'; });
+  const [date, setDate] = useState('');
+  const [time, setTime] = useState(() => {
+    const round = only ? scheduledRound(only) : null;
+    return only && round ? only[`${round}_time`] : '';
+  });
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const today = todayIso();
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const done = await updateCandidates(candidates.map((c) => c.id), (c) => {
+        const round = scheduledRound(c);
+        return round ? giveNewDate(c, round, { date, time }, note) : {};
+      });
+      toast(`${only ? only.full_name : `${done} candidates`}: new interview date ${whenText(date, time)}.`);
+      onClose();
+    } catch (error) {
+      toast(errorText(error), 'bad');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={`${followUp ? 'Follow-up call: will come. ' : ''}New interview date: ${only ? only.full_name : `${candidates.length} candidates`}`}
+      description={only ? <>{only.phone && <a className="tabular underline" href={`tel:${only.phone}`}>{only.phone}</a>}</> : 'The same day and time for everyone selected.'}
+      onClose={onClose}
+      width="max-w-lg"
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" form="new-date-form" variant="primary" loading={busy}>Save new date{only ? '' : ` for ${candidates.length}`}</Button>
+        </>
+      }
+    >
+      <form id="new-date-form" onSubmit={submit} className="space-y-3">
+        <DateTimeField label="New interview on" required min={today} date={date} time={time} onDate={setDate} onTime={setTime} />
+        <TextArea
+          label={followUp ? 'What the candidate said on the follow-up call (optional)' : 'Remarks (optional)'}
+          rows={2}
+          maxLength={1000}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+        <p className="text-xs text-ink-muted">A new date is given once. If the candidate misses this one too, an admin decides.</p>
+      </form>
+    </Dialog>
+  );
+}
+
+/**
+ * Ends a missed interview. not_interested: on the follow-up call the candidate said they will not come.
+ * admin: an admin rejects the candidate for not attending. A final interview also takes the final decision's dates and locks.
+ */
+export function RejectMissedDialog({ candidate, reason, onClose }: { candidate: Candidate; reason: 'not_interested' | 'admin'; onClose: () => void }) {
+  const { updateCandidate, user } = useStore();
+  const toast = useToast();
+  const round = scheduledRound(candidate) ?? 'primary';
+  const locks = round === 'secondary';
+  const [note, setNote] = useState('');
+  const [dates, setDates] = useState(() => initialRejectionDates());
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await updateCandidate(candidate.id, {
+        ...rejectMissed(candidate, round, reason, note),
+        ...(locks ? rejectDecision({ ...dates, by: user?.full_name ?? '' }) : {}),
+      });
+      toast(`${candidate.full_name}: saved. ${locks ? 'Rejected, and the process is now locked.' : 'Moved to Rejected.'}`);
+      onClose();
+    } catch (error) {
+      toast(errorText(error), 'bad');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={reason === 'not_interested' ? `Follow-up call: not interested · ${candidate.full_name}` : `Reject for not attending: ${candidate.full_name}`}
+      description={reason === 'not_interested' ? 'The candidate said on the call that they will not come. The process stops here.' : 'The candidate did not attend the interview. The process stops here.'}
+      onClose={onClose}
+      width="max-w-lg"
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" form="reject-missed-form" variant="danger" loading={busy}>{locks ? 'Save and lock' : 'Save rejection'}</Button>
+        </>
+      }
+    >
+      <form id="reject-missed-form" onSubmit={submit} className="space-y-3">
+        <TextArea
+          label={reason === 'not_interested' ? 'What the candidate said (optional)' : 'Remarks (optional)'}
+          rows={3}
+          autoFocus
+          maxLength={1000}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+        {locks && (
+          <div className="border-t border-line pt-3">
+            <RejectionFields dates={dates} onChange={setDates} />
+            <p className="mt-2 text-xs text-ink-muted">This is the final decision: the whole process locks once you save.</p>
+          </div>
+        )}
       </form>
     </Dialog>
   );
@@ -602,9 +872,11 @@ export function ScheduleDialog({ candidates, stage, onClose }: { candidates: Can
   const toast = useToast();
   const templates = messageTemplates.filter((t) => t.stage === stage || t.stage === 'general');
   const only = candidates.length === 1 ? candidates[0] : undefined;
+  // A primary interview not set yet starts from the day set on the bucket.
+  const bucketDay = stage === 'primary' ? bucketSlot(buckets.find((b) => b.id === candidates[0]?.bucket_id), todayIso()) : null;
   const [templateKey, setTemplateKey] = useState(templates[0]?.key ?? '');
-  const [date, setDate] = useState((stage === 'primary' ? only?.primary_date : only?.secondary_date) ?? '');
-  const [time, setTime] = useState((stage === 'primary' ? only?.primary_time : only?.secondary_time) ?? '');
+  const [date, setDate] = useState((stage === 'primary' ? only?.primary_date : only?.secondary_date) ?? bucketDay?.date ?? '');
+  const [time, setTime] = useState((stage === 'primary' ? only?.primary_date && only.primary_time : only?.secondary_time) || bucketDay?.time || '');
   const [channel, setChannel] = useState('SMS');
   const [busy, setBusy] = useState(false);
   const template = templates.find((t) => t.key === templateKey);

@@ -11,6 +11,9 @@ import type { Desk, DocumentTemplate, MessageTemplate, Profile, Role } from '../
 
 type Tab = 'company' | 'units' | 'messages' | 'documents' | 'ai' | 'team';
 
+// Same rule as settings_review_form_url in supabase/schema.sql.
+const FORMS_URL = /^https:\/\/forms\.(cloud\.microsoft|office\.com)\//;
+
 const lines = (text: string) => text.split('\n').map((line) => line.trim()).filter(Boolean);
 
 function CompanyTab() {
@@ -36,6 +39,11 @@ function CompanyTab() {
     try {
       // The structure is saved from its own tab; leaving it out here keeps the two from overwriting each other.
       const { companiesText, departmentsText, mediaText, maxFilesText, batchSizeText, batchPauseText, id: _id, updated_at: _updated, seal_path: _seal, org_structure: _structure, ...rest } = form;
+      const formUrl = (rest.review_form_url ?? '').trim();
+      if (formUrl && !FORMS_URL.test(formUrl)) {
+        toast('The survey link must be a Microsoft Forms link (https://forms.cloud.microsoft/… or https://forms.office.com/…).', 'bad');
+        return;
+      }
       // Kept within what the database accepts, so a typo cannot block saving the rest.
       const whole = (text: string, min: number, max: number, fallback: number) => {
         const number = Math.round(Number(text));
@@ -49,6 +57,7 @@ function CompanyTab() {
         upload_max_files: whole(maxFilesText, 1, 5000, 1000),
         upload_batch_size: whole(batchSizeText, 1, 1000, 50),
         upload_batch_pause: whole(batchPauseText, 0, 600, 10),
+        review_form_url: formUrl,
       });
       toast('Company settings saved.');
     } catch (error) {
@@ -127,6 +136,22 @@ function CompanyTab() {
           <TextInput label="Files per batch" type="number" min={1} max={1000} disabled={disabled} value={form.batchSizeText} onChange={(e) => set({ batchSizeText: e.target.value })} />
           <TextInput label="Break between batches (seconds)" hint="0 for no break" type="number" min={0} max={600} disabled={disabled} value={form.batchPauseText} onChange={(e) => set({ batchPauseText: e.target.value })} />
         </div>
+      </Card>
+      <Card title="Candidate Reviews survey">
+        <p className="mb-3 text-xs text-ink-muted">
+          In Microsoft Forms, open the form, go to Responses, choose Share a summary link and copy it. Candidate Reviews shows it to signed-in staff.
+          Anyone with this link can read every answer, so it stays hidden here.
+        </p>
+        <TextInput
+          label="Summary link"
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={isAdmin ? 'https://forms.cloud.microsoft/…' : ''}
+          disabled={disabled}
+          value={form.review_form_url ?? ''}
+          onChange={(e) => set({ review_form_url: e.target.value })}
+        />
       </Card>
       {isAdmin && <Button type="submit" variant="primary" icon={Check} loading={busy}>Save company settings</Button>}
     </form>

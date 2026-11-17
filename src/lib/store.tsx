@@ -39,6 +39,7 @@ export const CANDIDATE_LIST_COLUMNS = [
   'final_decision', 'decision_date', 'decision_time', 'informed_date', 'informed_time', 'decided_by', 'decided_at', 'review_seconds', 'review_count',
   'joining_status', 'joining_date', 'joining_time', 'joining_call_date', 'joining_call_time', 'joining_confirmed_date', 'joining_confirmed_time', 'joining_remarks', 'offered_salary',
   'employee_code', 'probation_period', 'reporting_to', 'documents_received', 'offer_sent_at', 'selected_at', 'created_at',
+  'primary_attendance', 'primary_attendance_note', 'primary_reschedules', 'secondary_attendance', 'secondary_attendance_note', 'secondary_reschedules',
 ].join(',');
 
 interface Data {

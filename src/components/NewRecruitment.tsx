@@ -5,7 +5,7 @@ import { DESIGNATIONS, gradeOf } from '../lib/designations';
 import { todayIso } from '../lib/format';
 import { useStore } from '../lib/store';
 import { OrgFields, type OrgPlace } from './OrgFields';
-import { Button, Dialog, errorText, HoverTooltip, Select, TextInput, useToast } from './ui';
+import { Button, DateTimeField, Dialog, errorText, HoverTooltip, Select, TextInput, useToast } from './ui';
 
 /**
  * One window for a new recruitment: where the position sits, which designation and how many people. Saving
@@ -19,6 +19,8 @@ export function NewRecruitmentDialog({ onClose, title = 'New recruitment' }: { o
   const [place, setPlace] = useState<OrgPlace>({ unit: '', department: '', section: '', subsection: '' });
   const [designation, setDesignation] = useState('');
   const [posts, setPosts] = useState('1');
+  const [interviewDate, setInterviewDate] = useState('');
+  const [interviewTime, setInterviewTime] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function submit(event: FormEvent) {
@@ -39,7 +41,10 @@ export function NewRecruitmentDialog({ onClose, title = 'New recruitment' }: { o
         requested_by: user?.full_name ?? '',
       });
       requisitionId = requisition.id;
-      const bucket = await saveBucket({ ...place, requisition_id: requisition.id, designation, company, color: 'green', status: 'Open', accepting_applications: true, description: '' });
+      const bucket = await saveBucket({
+        ...place, requisition_id: requisition.id, designation, company, color: 'green', status: 'Open', accepting_applications: true, description: '',
+        primary_date: interviewDate || null, primary_time: interviewTime,
+      });
       toast(`${designation}: requisition ${requisition.ref_no} and its CV bucket are ready.`);
       onClose();
       navigate(`/buckets/${bucket.id}`);
@@ -100,6 +105,18 @@ export function NewRecruitmentDialog({ onClose, title = 'New recruitment' }: { o
             value={posts}
             onChange={(e) => setPosts(e.target.value)}
             hint="People to hire, not CVs."
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <DateTimeField
+            label="Primary interview on"
+            required
+            min={todayIso()}
+            date={interviewDate}
+            time={interviewTime}
+            onDate={setInterviewDate}
+            onTime={setInterviewTime}
+            hint="Everyone who confirms on the call is scheduled for this day. It can be changed later from the bucket."
           />
         </div>
       </form>
