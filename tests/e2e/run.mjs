@@ -707,7 +707,7 @@ async function main() {
   await button('Select').click();
   const handOver = page.getByRole('dialog', { name: /Select Rupa Akter and hand over/ });
   await handOver.waitFor();
-  check('Select asks who on the process team takes the CV', await handOver.getByRole('radio').count() === 3);
+  check('Select asks who on the process team takes the CV: the whole team or any of its people', await handOver.getByRole('checkbox').count() === 3);
   await handOver.getByRole('button', { name: 'Select and hand over' }).click();
   await handOver.waitFor({ state: 'detached' });
   await stage('Shortlisted');
@@ -1248,7 +1248,11 @@ async function main() {
   const tania = page.getByRole('dialog', { name: 'Tania Akter' });
   await tania.getByRole('button', { name: 'Select', exact: true }).click();
   const toNafis = page.getByRole('dialog', { name: /Select Tania Akter and hand over/ });
-  await toNafis.getByRole('radio', { name: /^Nafis/ }).check();
+  // Several people can share a candidate; untick one again to hand it to Nafis alone.
+  await toNafis.getByRole('checkbox', { name: /^Nafis/ }).check();
+  await toNafis.getByRole('checkbox', { name: /^Mili/ }).check();
+  check('Two people can be ticked at once', (await toNafis.innerText()).includes('Handing to 2 people') && !(await toNafis.getByRole('checkbox', { name: /^Whole process team/ }).isChecked()));
+  await toNafis.getByRole('checkbox', { name: /^Mili/ }).uncheck();
   await toNafis.getByLabel('Note for them (optional)').fill('Please call before 5 PM');
   await shot('16-handover-dialog');
   await toNafis.getByRole('button', { name: 'Select and hand over' }).click();

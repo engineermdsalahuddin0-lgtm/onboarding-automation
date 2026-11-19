@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, Briefcase, Calendar, CalendarX, Check, ChevronDown, ClipboardPen, Copy, Download, ExternalLink, FileText, House, Link2, Mail, MapPin, MessageSquare, Pencil, Phone, PhoneCall, Search, Trash2, Upload, UserX, Users, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Briefcase, Calendar, CalendarX, Check, ChevronDown, ClipboardPen, Copy, Download, ExternalLink, FileText, House, Link2, Mail, MapPin, MessageSquare, Pencil, Phone, PhoneCall, Search, Trash2, Upload, UserPlus, UserX, Users, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { BucketFormDialog } from '../components/BucketForm';
@@ -537,9 +537,16 @@ export function BucketDetailPage() {
             </span>
           );
         })}
-        <Button size="sm" variant="ghost" icon={ClipboardPen} className="ml-auto" onClick={() => setModal({ kind: 'panel' })}>
-          {canWrite ? 'Change interviewers' : 'See interviewers'}
-        </Button>
+        {(() => {
+          // A new bucket has nobody yet: the button asks to add them, and to change them once there are some.
+          const hasInterviewers = panels.some((p) => p.bucket_id === bucket.id);
+          if (!canWrite) return hasInterviewers ? <Button size="sm" variant="ghost" icon={ClipboardPen} className="ml-auto" onClick={() => setModal({ kind: 'panel' })}>See interviewers</Button> : null;
+          return (
+            <Button size="sm" variant={hasInterviewers ? 'ghost' : 'primary'} icon={hasInterviewers ? ClipboardPen : UserPlus} className="ml-auto" onClick={() => setModal({ kind: 'panel' })}>
+              {hasInterviewers ? 'Change interviewers' : 'Add interviewers'}
+            </Button>
+          );
+        })()}
       </section>
 
       <div data-tour="bucket-tiles" role="tablist" aria-label="Where candidates stand" className="grid grid-cols-[repeat(auto-fit,minmax(6.5rem,1fr))] gap-2">
