@@ -7,6 +7,9 @@ import type {
   CvReviewSession,
   Designation,
   EditRequest,
+  GuestLink,
+  InterviewAssessment,
+  InterviewPanelMember,
   JobPosting,
   Profile,
   Question,
@@ -193,13 +196,16 @@ export const DEMO_PEOPLE = {
   agm: '0d3b6c1e-7a52-4f0e-9c1a-000000000001',
   nafis: '0d3b6c1e-7a52-4f0e-9c1a-000000000002',
   mili: '0d3b6c1e-7a52-4f0e-9c1a-000000000003',
+  /** An interviewer account: signs in only to mark the interviews they sit on. */
+  interviewer: '0d3b6c1e-7a52-4f0e-9c1a-000000000004',
 } as const;
 
 export function buildDemoData() {
   const profiles: Profile[] = [
-    { id: DEMO_PEOPLE.agm, email: 'tareq@example.com', full_name: 'Tareq Azij', role: 'admin', job_title: 'Assistant General Manager', desk: 'all', created_at: stamp(-30) },
-    { id: DEMO_PEOPLE.nafis, email: 'nafis@example.com', full_name: 'Nafis', role: 'hr', job_title: 'Senior Manager', desk: 'process', created_at: stamp(-30) },
-    { id: DEMO_PEOPLE.mili, email: 'mili@example.com', full_name: 'Mili', role: 'hr', job_title: 'Senior Executive', desk: 'process', created_at: stamp(-30) },
+    { id: DEMO_PEOPLE.agm, email: 'tareq@example.com', full_name: 'Tareq Azij', role: 'admin', job_title: 'Assistant General Manager', desk: 'all', department: 'HR & Admin', signature: '', created_at: stamp(-30) },
+    { id: DEMO_PEOPLE.nafis, email: 'nafis@example.com', full_name: 'Nafis', role: 'hr', job_title: 'Senior Manager', desk: 'process', department: 'HR & Admin', signature: '', created_at: stamp(-30) },
+    { id: DEMO_PEOPLE.mili, email: 'mili@example.com', full_name: 'Mili', role: 'hr', job_title: 'Senior Executive', desk: 'process', department: 'HR & Admin', signature: '', created_at: stamp(-30) },
+    { id: DEMO_PEOPLE.interviewer, email: 'interviewer@example.com', full_name: 'Demo Interviewer', role: 'interviewer', job_title: 'General Manager', desk: 'all', department: 'HR & Admin', signature: '', created_at: stamp(-20) },
   ];
 
   const settings: Settings = {
@@ -493,8 +499,27 @@ export function buildDemoData() {
     },
   ];
 
+  // The demo interviewer sits on both interviews of the first two buckets; Tareq also on the second bucket's primary.
+  const interview_panels: InterviewPanelMember[] = [
+    ['bkt-1', 'primary', DEMO_PEOPLE.interviewer], ['bkt-1', 'secondary', DEMO_PEOPLE.interviewer],
+    ['bkt-2', 'primary', DEMO_PEOPLE.interviewer], ['bkt-2', 'secondary', DEMO_PEOPLE.interviewer], ['bkt-2', 'primary', DEMO_PEOPLE.agm],
+  ].map(([bucketId, stage, interviewerId], index) => ({
+    id: `panel-${index + 1}`, bucket_id: bucketId, stage: stage as InterviewPanelMember['stage'], interviewer_id: interviewerId, created_at: stamp(-5),
+  }));
+  // One filled form, the marks of the paper form the company uses: 23 out of 50.
+  const interview_assessments: InterviewAssessment[] = [{
+    id: 'assessment-1', candidate_id: 'cand-12', stage: 'primary', interviewer_key: `user:${DEMO_PEOPLE.interviewer}`, interviewer_id: DEMO_PEOPLE.interviewer,
+    guest_link_id: null, interviewer_name: 'Demo Interviewer', interviewer_designation: 'General Manager', interviewer_department: 'HR & Admin',
+    ratings: [3, 2, 2, 2, 3, 2, 2, 2, 2, 3], obtained: 23, rated: 10, strengths: [], weaknesses: ['Communication', 'Technical depth'],
+    comment: 'Below average', recommendation: 'turn_down', signature: '', marks_by: 'interviewer', entered_by: DEMO_PEOPLE.interviewer,
+    entered_by_name: 'Demo Interviewer', created_at: stamp(-2), updated_at: stamp(-2),
+  }];
+
   return {
     profiles,
+    interview_panels,
+    guest_links: [] as GuestLink[],
+    interview_assessments,
     notifications,
     settings: [settings],
     message_templates: DEFAULT_MESSAGE_TEMPLATES,

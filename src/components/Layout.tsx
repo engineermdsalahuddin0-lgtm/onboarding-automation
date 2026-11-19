@@ -1,6 +1,7 @@
 import {
   Activity,
   ClipboardList,
+  ClipboardPen,
   FileQuestion,
   FolderOpen,
   LayoutDashboard,
@@ -10,6 +11,7 @@ import {
   Settings,
   Upload,
   UserCheck,
+  UserCog,
   type LucideIcon,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -43,6 +45,16 @@ const NAV: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
 const focusMain = () => document.getElementById('main-content')?.focus({ preventScroll: true });
 
 function Sidebar() {
+  const { user, panels, canWrite } = useStore();
+  // Staff who sit on an interview panel mark their candidates from here, as interviewer accounts do.
+  const onPanel = panels.some((p) => p.interviewer_id === user?.id);
+  const items = [
+    ...NAV.slice(0, 5),
+    ...(onPanel ? [{ to: '/my-interviews', label: 'My interviews', icon: ClipboardPen }] : []),
+    // Admins and HR manage interviewer accounts, panels and guest links here.
+    ...(canWrite ? [{ to: '/interviewers', label: 'Interviewers', icon: UserCog }] : []),
+    ...NAV.slice(5),
+  ];
   return (
     // The rail keeps its width in the layout; the wider panel floats over the page on hover or keyboard focus.
     // z-index goes on the sticky rail: it forms the stacking context the panel has to rise out of to clear the header.
@@ -61,7 +73,7 @@ function Sidebar() {
           </span>
         </Link>
         <ul className="flex flex-1 flex-col gap-1 px-2.5 pt-2">
-          {NAV.map(({ to, label, icon: Icon, end }) => (
+          {items.map(({ to, label, icon: Icon, end }) => (
             <li key={to}>
               <NavLink
                 to={to}

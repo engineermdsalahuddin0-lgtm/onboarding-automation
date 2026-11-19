@@ -1,5 +1,6 @@
 import { Copy, Download, Mail, MessageCircle, Plus, Smartphone, Star, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { assessmentsToPanel } from '../lib/assessment';
 import { backend } from '../lib/backend';
 import { DOCUMENT_CHECKLIST } from '../lib/defaults';
 import { downloadCsv } from '../lib/export';
@@ -486,7 +487,8 @@ export function PanelEditor({ rows, onChange }: { rows: PanelRow[]; onChange: (r
               required
               min={1}
               max={10}
-              inputMode="numeric"
+              step={0.1}
+              inputMode="decimal"
               value={row.score}
               onChange={(e) => patchRow(row.key, { score: e.target.value })}
             />
@@ -519,13 +521,16 @@ export function PanelEditor({ rows, onChange }: { rows: PanelRow[]; onChange: (r
 }
 
 export function InterviewResultDialog({ candidate, stage, result, onClose }: { candidate: Candidate; stage: 'primary' | 'secondary'; result: 'selected' | 'rejected'; onClose: () => void }) {
-  const { updateCandidate, user } = useStore();
+  const { updateCandidate, user, assessments } = useStore();
   const toast = useToast();
   const isPrimary = stage === 'primary';
   const asksForList = !isPrimary && result === 'selected';
   // Rejecting at the final interview is the final decision, so its dates are taken here too.
   const locks = !isPrimary && result === 'rejected';
-  const [rows, setRows] = useState<PanelRow[]>(() => panelRows(isPrimary ? candidate.primary_panel : candidate.secondary_panel));
+  const saved = isPrimary ? candidate.primary_panel : candidate.secondary_panel;
+  // With no panel saved yet, the interviewers' own forms fill it in: each score out of 10, and Employ as recommended.
+  const fromForms = saved.length === 0 ? assessmentsToPanel(assessments.filter((a) => a.candidate_id === candidate.id && a.stage === stage)) : [];
+  const [rows, setRows] = useState<PanelRow[]>(() => panelRows(fromForms.length > 0 ? fromForms : saved));
   const [category, setCategory] = useState<SelectionCategory | ''>('');
   const [remarks, setRemarks] = useState(candidate.secondary_feedback ?? '');
   const [dates, setDates] = useState(() => initialRejectionDates());
@@ -579,6 +584,11 @@ export function InterviewResultDialog({ candidate, stage, result, onClose }: { c
       }
     >
       <form id="interview-form" onSubmit={submit} className="space-y-3">
+        {fromForms.length > 0 && (
+          <p className="rounded-lg bg-brand-50 px-3 py-2 text-xs text-brand-900">
+            Filled in from {fromForms.length} interviewer form{fromForms.length === 1 ? '' : 's'}: each score is the form's marks out of 50, shown out of 10, and Employ counts as recommended.
+          </p>
+        )}
         <PanelEditor rows={rows} onChange={setRows} />
         {asksForList && (
           <div className="border-t border-line pt-3">

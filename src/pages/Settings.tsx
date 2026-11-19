@@ -1,5 +1,7 @@
-import { Check, KeyRound, RotateCcw, Upload } from 'lucide-react';
+import { Check, KeyRound, RotateCcw, Upload, UserPlus } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
+import { NewInterviewerDialog } from '../components/InterviewerDialogs';
 import { OrgStructureEditor } from '../components/OrgStructureEditor';
 import { Button, Card, Confirm, errorText, PageHeader, Select, StatusBadge, TABLE, Tabs, TD, TextArea, TextInput, TH, THEAD, useToast } from '../components/ui';
 import { backend } from '../lib/backend';
@@ -335,6 +337,7 @@ function TeamTab() {
   const { user, isAdmin, refreshUser, reload } = useStore();
   const toast = useToast();
   const [people, setPeople] = useState<Profile[]>([]);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     void backend.list<Profile>('profiles', { order: { column: 'created_at' } }).then(setPeople);
@@ -371,10 +374,15 @@ function TeamTab() {
 
   return (
     <div className="max-w-5xl space-y-3">
-      <p className="text-sm text-ink-soft">
-        To add someone, create their account in Supabase (Authentication &gt; Users &gt; Add user). They appear here as Pending and see nothing until you choose a role.
-        HR can do everything except delete records and change settings; Viewer can only look.
-      </p>
+      <div className="flex flex-wrap items-start gap-3">
+        <p className="flex-1 text-sm text-ink-soft">
+          To add staff, create their account in Supabase (Authentication &gt; Users &gt; Add user). They appear here as Pending and see nothing until you choose a role.
+          HR can do everything except delete records and change settings; Viewer can only look. An <strong>Interviewer</strong> signs in only to mark the interviews they are put on:
+          manage them on the <Link className="underline" to="/interviewers">Interviewers</Link> page.
+        </p>
+        {isAdmin && <Button icon={UserPlus} onClick={() => setAdding(true)}>Add interviewer</Button>}
+      </div>
+      {adding && <NewInterviewerDialog onClose={() => setAdding(false)} onDone={(profile) => setPeople((current) => [...current.filter((p) => p.id !== profile.id), profile])} />}
       <div className="rounded-xl border border-line bg-surface px-4 py-3 text-sm text-ink-soft">
         <p className="font-medium text-ink">Desk: who does which part of the work</p>
         <ul className="mt-1 list-disc space-y-0.5 pl-5">
@@ -418,6 +426,7 @@ function TeamTab() {
                       <option value="admin">Admin</option>
                       <option value="hr">HR</option>
                       <option value="viewer">Viewer</option>
+                      <option value="interviewer">Interviewer</option>
                       <option value="pending">Pending (no access)</option>
                     </Select>
                   </div>

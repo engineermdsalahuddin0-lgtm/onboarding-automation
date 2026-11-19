@@ -76,7 +76,8 @@ async function main() {
   await page.goto(BASE);
   const accounts = page.getByRole('list', { name: 'Demo accounts' });
   await accounts.waitFor();
-  check('Demo mode offers the three accounts', await accounts.getByRole('button').count() === 3
+  check('Demo mode offers the three staff accounts and the interviewer', await accounts.getByRole('button').count() === 4
+    && await accounts.getByText('Interviewer: marks interviews only').count() === 1
     && await accounts.getByText('Assistant General Manager').count() === 1
     && await accounts.getByText('Senior Manager').count() === 1
     && await accounts.getByText('Senior Executive').count() === 1);

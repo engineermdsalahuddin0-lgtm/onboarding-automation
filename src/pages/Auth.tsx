@@ -38,7 +38,7 @@ function DemoAccounts() {
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-semibold">{person.full_name}</span>
                 <span className="block text-xs text-ink-soft">{person.job_title}</span>
-                <span className="block text-xs text-ink-muted">{DESK_LABELS[person.desk]}</span>
+                <span className="block text-xs text-ink-muted">{person.role === 'interviewer' ? 'Interviewer: marks interviews only' : DESK_LABELS[person.desk]}</span>
               </span>
               <LogIn className="size-4 text-ink-muted" aria-hidden />
             </button>
@@ -75,7 +75,7 @@ export function LoginPage() {
     <Shell>
       <h1 className="text-center text-lg font-semibold">Recruitment Management Suite</h1>
       <p className="mt-1 mb-5 text-center text-sm text-ink-soft">
-        {isDemo ? 'Demo mode: choose who you are. No password needed.' : 'Sign in with your HR account.'}
+        {isDemo ? 'Demo mode: choose who you are. No password needed.' : 'Sign in with your HR or interviewer account.'}
       </p>
       {isDemo ? (
         <DemoAccounts />

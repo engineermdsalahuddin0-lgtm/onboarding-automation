@@ -6,8 +6,13 @@ import type {
   CvBucket,
   Designation,
   DocumentTemplate,
+  AssessmentInput,
   EditRequest,
   EditStep,
+  GuestLink,
+  InterviewAssessment,
+  InterviewPanelMember,
+  InterviewStage,
   JobPosting,
   MessageTemplate,
   Profile,
@@ -60,6 +65,33 @@ interface Data {
   questions: Question[];
   /** Correction requests, newest first. */
   editRequests: EditRequest[];
+  /** Who sits on which bucket's primary or final interview. */
+  panels: InterviewPanelMember[];
+  /** Links for interviewers without an account, newest first. */
+  guestLinks: GuestLink[];
+  /** Every interviewer's Interview Assessment Form. */
+  assessments: InterviewAssessment[];
+}
+
+/** What HR enters for an interviewer who could not: an account, or a name for someone without one. */
+export interface ModeratorEntry {
+  candidateId: string;
+  stage: InterviewStage;
+  interviewerId: string | null;
+  name?: string;
+  designation?: string;
+  department?: string;
+  input: AssessmentInput;
+  /** '' leaves it empty, 'profile' uses the interviewer's saved signature, or a drawn one. */
+  signature: string;
+}
+
+export interface NewInterviewer {
+  email: string;
+  password: string;
+  full_name: string;
+  job_title: string;
+  department: string;
 }
 
 const EMPTY: Data = {
@@ -76,6 +108,9 @@ const EMPTY: Data = {
   notifications: [],
   questions: [],
   editRequests: [],
+  panels: [],
+  guestLinks: [],
+  assessments: [],
 };
 
 interface StoreValue extends Data {
@@ -131,6 +166,24 @@ interface StoreValue extends Data {
   cancelEdit: (requestId: string) => Promise<void>;
   /** Applies an approved correction: only the changed fields of its step. */
   applyEdit: (requestId: string, changes: Partial<Candidate>) => Promise<void>;
+
+  /** Puts an interviewer on a bucket's primary or final interview, or takes them off. */
+  addToPanel: (bucketId: string, stage: InterviewStage, interviewerId: string) => Promise<void>;
+  removeFromPanel: (panelId: string) => Promise<void>;
+  /** Makes a link for guest interviewers, working on that day only. */
+  createGuestLink: (bucketId: string, stage: InterviewStage, validOn: string) => Promise<GuestLink>;
+  removeGuestLink: (linkId: string) => Promise<void>;
+  /** HR enters the marks of an interviewer who could not. */
+  saveModeratorAssessment: (entry: ModeratorEntry) => Promise<InterviewAssessment>;
+  /** HR adds a missing name, designation or signature to a form. */
+  signAssessment: (assessmentId: string, fields: { name?: string; designation?: string; signature: string }) => Promise<InterviewAssessment>;
+  /** Admins only. */
+  removeAssessment: (assessmentId: string) => Promise<void>;
+  /** Admins only: an account that signs in only to mark interviews. */
+  createInterviewer: (person: NewInterviewer) => Promise<Profile>;
+  /** Admins only: changes someone's details, role or saved signature. */
+  updateProfile: (id: string, patch: Partial<Profile>) => Promise<Profile>;
+  refreshAssessments: () => Promise<void>;
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -176,7 +229,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [refreshUser]);
 
   const reload = useCallback(async () => {
-    const [settingsRows, messageTemplates, documentTemplates, designations, requisitions, postings, buckets, candidates, reviews, team, notifications, questions, editRequests] = await Promise.all([
+    const [settingsRows, messageTemplates, documentTemplates, designations, requisitions, postings, buckets, candidates, reviews, team, notifications, questions, editRequests, panels, guestLinks, assessments] = await Promise.all([
       backend.list<Settings>('settings', { order: { column: 'id' } }),
       backend.list<MessageTemplate>('message_templates', { order: { column: 'key' } }),
       backend.list<DocumentTemplate>('document_templates', { order: { column: 'sort_order' } }),
@@ -193,6 +246,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       backend.list<Question>('questions', { order: { column: 'created_at', ascending: false } }),
       // Before schema.sql is run again after this update, the table is missing: the rest of the app still works.
       backend.list<EditRequest>('edit_requests', { order: { column: 'created_at', ascending: false } }).catch(() => [] as EditRequest[]),
+      // The same for the interview assessment tables.
+      backend.list<InterviewPanelMember>('interview_panels', { order: { column: 'created_at' } }).catch(() => [] as InterviewPanelMember[]),
+      backend.list<GuestLink>('guest_links', { order: { column: 'created_at', ascending: false } }).catch(() => [] as GuestLink[]),
+      backend.list<InterviewAssessment>('interview_assessments', { order: { column: 'created_at' } }).catch(() => [] as InterviewAssessment[]),
     ]);
     const stored = settingsRows[0];
     setData({
@@ -210,11 +267,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       notifications,
       questions,
       editRequests,
+      panels,
+      guestLinks,
+      assessments,
     });
     return;
   }, [userId]);
 
-  const hasAccess = user !== null && user.role !== 'pending';
+  // Interviewers see only their own interviews, through my_interviews; they load none of the staff data.
+  const hasAccess = user !== null && user.role !== 'pending' && user.role !== 'interviewer';
   const canWrite = user?.role === 'admin' || user?.role === 'hr';
 
   useEffect(() => {
@@ -369,6 +430,96 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     await refreshEdits();
   }, [refreshEdits]);
 
+  const refreshAssessments = useCallback(async () => {
+    const assessments = await backend.list<InterviewAssessment>('interview_assessments', { order: { column: 'created_at' } });
+    setData((state) => ({ ...state, assessments }));
+  }, []);
+
+  const addToPanel = useCallback(async (bucketId: string, stage: InterviewStage, interviewerId: string) => {
+    const [row] = await backend.insert<InterviewPanelMember>('interview_panels', [{ bucket_id: bucketId, stage, interviewer_id: interviewerId }]);
+    if (!row) throw new Error('The panel could not be changed. You may not have permission.');
+    setData((state) => ({ ...state, panels: [...state.panels, row] }));
+  }, []);
+
+  const removeFromPanel = useCallback(async (panelId: string) => {
+    await backend.remove('interview_panels', { id: panelId });
+    setData((state) => ({ ...state, panels: state.panels.filter((p) => p.id !== panelId) }));
+  }, []);
+
+  const createGuestLink = useCallback(async (bucketId: string, stage: InterviewStage, validOn: string) => {
+    const [row] = await backend.insert<GuestLink>('guest_links', [{ bucket_id: bucketId, stage, valid_on: validOn }]);
+    if (!row) throw new Error('The link could not be made. You may not have permission.');
+    setData((state) => ({ ...state, guestLinks: [row, ...state.guestLinks] }));
+    return row;
+  }, []);
+
+  const removeGuestLink = useCallback(async (linkId: string) => {
+    await backend.remove('guest_links', { id: linkId });
+    setData((state) => ({ ...state, guestLinks: state.guestLinks.filter((l) => l.id !== linkId) }));
+  }, []);
+
+  const putAssessment = useCallback((row: InterviewAssessment) => {
+    setData((state) => ({ ...state, assessments: replaceById(state.assessments, row) }));
+    return row;
+  }, []);
+
+  const saveModeratorAssessment = useCallback(async (entry: ModeratorEntry) => {
+    const row = await backend.rpc<InterviewAssessment>('moderator_save_assessment', {
+      p_candidate: entry.candidateId,
+      p_stage: entry.stage,
+      p_interviewer: entry.interviewerId,
+      p_name: entry.name ?? '',
+      p_designation: entry.designation ?? '',
+      p_department: entry.department ?? '',
+      p_payload: entry.input,
+      p_signature: entry.signature,
+    });
+    return putAssessment(row);
+  }, [putAssessment]);
+
+  const signAssessment = useCallback(async (assessmentId: string, fields: { name?: string; designation?: string; signature: string }) => {
+    const row = await backend.rpc<InterviewAssessment>('moderator_sign_assessment', {
+      p_assessment: assessmentId, p_name: fields.name ?? '', p_designation: fields.designation ?? '', p_signature: fields.signature,
+    });
+    return putAssessment(row);
+  }, [putAssessment]);
+
+  const removeAssessment = useCallback(async (assessmentId: string) => {
+    await backend.remove('interview_assessments', { id: assessmentId });
+    const left = await backend.list<{ id: string }>('interview_assessments', { select: 'id', match: { id: assessmentId } });
+    if (left.length > 0) throw new Error('Only an admin can delete a form.');
+    setData((state) => ({ ...state, assessments: state.assessments.filter((a) => a.id !== assessmentId) }));
+  }, []);
+
+  const createInterviewer = useCallback(async (person: NewInterviewer) => {
+    let profile: Profile;
+    if (backend.mode === 'demo') {
+      [profile] = await backend.insert<Profile>('profiles', [{
+        email: person.email.trim(), full_name: person.full_name.trim(), job_title: person.job_title.trim(), department: person.department.trim(),
+        role: 'interviewer', desk: 'all', signature: '',
+      }]);
+    } else {
+      const token = await backend.accessToken();
+      const response = await fetch('/api/team/interviewers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(person),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.message || 'The account could not be made.');
+      profile = body.profile as Profile;
+    }
+    setData((state) => ({ ...state, team: replaceById(state.team, profile) }));
+    return profile;
+  }, []);
+
+  const updateProfile = useCallback(async (id: string, patch: Partial<Profile>) => {
+    const [row] = await backend.update<Profile>('profiles', { id }, patch);
+    if (!row) throw new Error('Only an admin can change accounts.');
+    setData((state) => ({ ...state, team: replaceById(state.team, row) }));
+    return row;
+  }, []);
+
   const saveRow = useCallback(
     async <T extends { id: string }>(table: TableName, key: keyof Data, row: Partial<T>): Promise<T> => {
       const { id, ...patch } = row as Partial<T> & { id?: string };
@@ -481,8 +632,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       decideEdit,
       cancelEdit,
       applyEdit,
+      addToPanel,
+      removeFromPanel,
+      createGuestLink,
+      removeGuestLink,
+      saveModeratorAssessment,
+      signAssessment,
+      removeAssessment,
+      createInterviewer,
+      updateProfile,
+      refreshAssessments,
     }),
-    [data, user, loadingUser, loadingData, loadError, canWrite, lastSave, reload, refreshUser, updateCandidate, updateCandidates, addCandidates, removeCandidate, removeBucket, syncRequisitions, requestEdit, decideEdit, cancelEdit, applyEdit, saveRow, removeRow, merge, logReviewSession, markNotificationsRead],
+    [data, user, loadingUser, loadingData, loadError, canWrite, lastSave, reload, refreshUser, updateCandidate, updateCandidates, addCandidates, removeCandidate, removeBucket, syncRequisitions, requestEdit, decideEdit, cancelEdit, applyEdit, saveRow, removeRow, merge, logReviewSession, markNotificationsRead, addToPanel, removeFromPanel, createGuestLink, removeGuestLink, saveModeratorAssessment, signAssessment, removeAssessment, createInterviewer, updateProfile, refreshAssessments],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

@@ -19,12 +19,17 @@ const QuestionPaperPage = lazy(() => import('./pages/Questions').then((m) => ({ 
 const ActivityPage = lazy(() => import('./pages/Activity').then((m) => ({ default: m.ActivityPage })));
 const ApplyPage = lazy(() => import('./pages/PublicForms').then((m) => ({ default: m.ApplyPage })));
 const ReviewFormPage = lazy(() => import('./pages/PublicForms').then((m) => ({ default: m.ReviewFormPage })));
+const MyInterviewsPage = lazy(() => import('./pages/MyInterviews').then((m) => ({ default: m.MyInterviewsPage })));
+const InterviewersPage = lazy(() => import('./pages/Interviewers').then((m) => ({ default: m.InterviewersPage })));
+const GuestInterviewPage = lazy(() => import('./pages/GuestInterview').then((m) => ({ default: m.GuestInterviewPage })));
 
 function Staff() {
   const { user, loadingUser, loadingData, loadError } = useStore();
   if (loadingUser) return <Spinner />;
   if (!user) return <LoginPage />;
   if (user.role === 'pending') return <AccessPending />;
+  // An interviewer account sees only its own interviews, nothing else of the app.
+  if (user.role === 'interviewer') return <Suspense fallback={<Spinner />}><MyInterviewsPage standalone /></Suspense>;
 
   return (
     <Routes>
@@ -52,6 +57,8 @@ function Staff() {
                   <Route path="reviews" element={<ReviewsPage />} />
                   <Route path="questions" element={<QuestionsPage />} />
                   <Route path="activity" element={<ActivityPage />} />
+                  <Route path="my-interviews" element={<MyInterviewsPage />} />
+                  <Route path="interviewers" element={<InterviewersPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
@@ -73,6 +80,7 @@ export default function App() {
           {/* Public pages: candidates reach these from a link, with no account. */}
           <Route path="/apply/:code" element={<Suspense fallback={<Spinner />}><ApplyPage /></Suspense>} />
           <Route path="/review/:token" element={<Suspense fallback={<Spinner />}><ReviewFormPage /></Suspense>} />
+          <Route path="/interview/:token" element={<Suspense fallback={<Spinner />}><GuestInterviewPage /></Suspense>} />
           <Route
             path="*"
             element={

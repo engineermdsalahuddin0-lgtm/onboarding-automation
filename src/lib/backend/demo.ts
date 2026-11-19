@@ -1,4 +1,5 @@
-import type { AppNotification, Candidate, CandidateEvent, CandidateReview, CvBucket, EditRequest, EditStep, Profile, Requisition, Settings } from '../../types';
+import type { AppNotification, Candidate, CandidateEvent, CandidateReview, CvBucket, EditRequest, EditStep, InterviewCandidate, InterviewStage, Profile, Requisition, Settings } from '../../types';
+import { cleanInput, cleanSignature, todayBd } from '../assessment';
 import { EDIT_STEP_FIELDS, EDIT_STEP_LABELS, isReviewOpen, LOCKED_FIELDS, normalizePhone } from '../pipeline';
 import { completedStep, COMPLETES_PROCESS, PROCESS_FIELDS, SCREENING_FIELDS } from '../team';
 import { buildDemoData } from './seed';
@@ -9,7 +10,7 @@ import { BackendError, type Backend, type ListOptions, type PresenceEntry, type 
 
 const DB_NAME = 'bitopi-onboarding-demo';
 // Bump when the sample data's shape changes: browsers holding an older copy start again from fresh samples.
-const STATE_KEY = 'state-v11';
+const STATE_KEY = 'state-v12';
 
 type Row = Record<string, any>;
 type State = Record<string, Row[]> & { __secrets?: any };
@@ -396,6 +397,65 @@ export function createDemoBackend(): Backend {
         return p?.full_name || p?.email || '?';
       }).join(', ');
 
+  // ---- Interview assessment, as the functions of that section in schema.sql ----
+  const profileList = () => state.profiles as unknown as Profile[];
+  const nameOf = (p: Profile) => p.full_name || p.email || '';
+  const viewOf = (stage: InterviewStage, c: Row) => (stage === 'primary'
+    ? { date: c.primary_date ?? null, time: c.primary_time ?? '', status: c.primary_status, attendance: c.primary_attendance ?? '' }
+    : { date: c.secondary_date ?? null, time: c.secondary_time ?? '', status: c.secondary_status, attendance: c.secondary_attendance ?? '' });
+  const scheduled = (stage: InterviewStage, c: Row) => (stage === 'primary' ? c.message_status === 'message_done' : c.secondary_status !== 'pending');
+
+  function interviewCandidates(bucketId: string, stage: InterviewStage, day: string | null = null): InterviewCandidate[] {
+    return table('candidates')
+      .filter((c) => c.bucket_id === bucketId && scheduled(stage, c))
+      .map((c) => ({ id: c.id, bucket_id: c.bucket_id, full_name: c.full_name, current_designation: c.current_designation ?? '', ...viewOf(stage, c) }))
+      .filter((c) => day === null || c.date === null || c.date === day)
+      .sort((a, b) => (a.date ?? '9999').localeCompare(b.date ?? '9999') || a.time.localeCompare(b.time) || a.full_name.localeCompare(b.full_name));
+  }
+
+  function interviewCandidate(candidateId: string, stage: string): Row {
+    if (stage !== 'primary' && stage !== 'secondary') throw new BackendError(`There is no interview called ${stage}.`);
+    const c = table('candidates').find((row) => row.id === candidateId);
+    if (!c) throw new BackendError('This candidate was not found.');
+    if (!scheduled(stage, c)) throw new BackendError(`This candidate's ${stage === 'primary' ? 'primary' : 'final'} interview is not scheduled yet.`);
+    return c;
+  }
+
+  const clean = (payload: unknown) => {
+    try {
+      return cleanInput((payload ?? {}) as Row);
+    } catch (error) {
+      throw new BackendError((error as Error).message);
+    }
+  };
+  const signatureOf = (value: unknown) => {
+    try {
+      return cleanSignature(value as string);
+    } catch (error) {
+      throw new BackendError((error as Error).message);
+    }
+  };
+
+  /** Insert, or on the same candidate, interview and interviewer update only the given columns, as on conflict do update. */
+  function upsertAssessment(values: Row, updateKeys: string[]): Row {
+    const now = new Date().toISOString();
+    const existing = table('interview_assessments').find((a) => a.candidate_id === values.candidate_id && a.stage === values.stage && a.interviewer_key === values.interviewer_key);
+    if (existing) {
+      for (const key of updateKeys) existing[key] = values[key];
+      if (values.signature) existing.signature = values.signature;
+      existing.updated_at = now;
+      return existing;
+    }
+    const row: Row = {
+      id: crypto.randomUUID(), interviewer_id: null, guest_link_id: null, interviewer_name: '', interviewer_designation: '', interviewer_department: '',
+      signature: '', entered_by: null, entered_by_name: '', created_at: now, updated_at: now, ...values,
+    };
+    table('interview_assessments').push(row);
+    return row;
+  }
+  const MARK_KEYS = ['ratings', 'obtained', 'rated', 'strengths', 'weaknesses', 'comment', 'recommendation'];
+  const WHO_KEYS = ['interviewer_name', 'interviewer_designation', 'interviewer_department'];
+
   /** Mirrors stamp_question_author and the mcq_needs_choices check in schema.sql. */
   function checkQuestion(row: Row) {
     if (!String(row.question ?? '').trim()) throw new BackendError('A question needs its text.');
@@ -456,6 +516,22 @@ export function createDemoBackend(): Backend {
       case 'cv_review_sessions':
         // Always the person signed in, as stamp_review_session does.
         return { id: crypto.randomUUID(), ...row, reviewer_id: demoUser().id, reviewer_name: actorName() };
+      case 'interview_panels': {
+        // As check_panel_member in schema.sql.
+        const person = profileList().find((p) => p.id === row.interviewer_id);
+        if (!person || !['admin', 'hr', 'interviewer'].includes(person.role)) {
+          throw new BackendError('Only interviewer and staff accounts can sit on an interview panel.');
+        }
+        if (table('interview_panels').some((p) => p.bucket_id === row.bucket_id && p.stage === row.stage && p.interviewer_id === row.interviewer_id)) {
+          throw new BackendError('duplicate key value violates unique constraint "interview_panels_bucket_id_stage_interviewer_id_key"');
+        }
+        return { id: crypto.randomUUID(), created_at: now, ...row, created_by: demoUser().id };
+      }
+      case 'guest_links':
+        // As stamp_guest_link in schema.sql: the token is always made here.
+        return { id: crypto.randomUUID(), created_at: now, valid_on: todayBd(), ...row, token: crypto.randomUUID(), created_by: demoUser().id, created_by_name: actorName() };
+      case 'profiles':
+        return { id: crypto.randomUUID(), created_at: now, email: '', full_name: '', role: 'pending', job_title: '', desk: 'all', department: '', signature: '', ...row };
       default:
         return { id: crypto.randomUUID(), created_at: now, ...row };
     }
@@ -626,11 +702,13 @@ export function createDemoBackend(): Backend {
       state[name] = table(name).filter((row) => !removed.has(row.id));
       // What the database removes with them (on delete cascade).
       if (name === 'candidates') {
-        for (const child of ['candidate_events', 'message_log', 'candidate_reviews', 'cv_review_sessions', 'notifications', 'edit_requests']) {
+        for (const child of ['candidate_events', 'message_log', 'candidate_reviews', 'cv_review_sessions', 'notifications', 'edit_requests', 'interview_assessments']) {
           state[child] = table(child).filter((row) => !removed.has(row.candidate_id));
         }
       }
-      if (name === 'cv_buckets') state.notifications = table('notifications').filter((row) => !removed.has(row.bucket_id));
+      if (name === 'cv_buckets') {
+        for (const child of ['notifications', 'interview_panels', 'guest_links']) state[child] = table(child).filter((row) => !removed.has(row.bucket_id));
+      }
       await persist();
     },
 
@@ -812,6 +890,136 @@ export function createDemoBackend(): Backend {
           }
           await persist();
           return structuredClone(request) as T;
+        }
+        // Interview assessment, as the functions of that section in schema.sql.
+        case 'my_interviews': {
+          const me = demoUser();
+          if (me.role === 'pending') throw new BackendError('Your account has no access yet. Ask an admin.');
+          const assignments = table('interview_panels')
+            .filter((p) => p.interviewer_id === me.id)
+            .map((p) => ({ panel: p, bucket: table('cv_buckets').find((b) => b.id === p.bucket_id) as CvBucket | undefined }))
+            .filter((item): item is { panel: Row; bucket: CvBucket } => item.bucket !== undefined && item.bucket.status !== 'Archived')
+            .sort((a, b) => b.bucket.created_at.localeCompare(a.bucket.created_at) || String(a.panel.stage).localeCompare(b.panel.stage))
+            .map(({ panel, bucket }) => ({
+              bucket_id: bucket.id, stage: panel.stage, designation: bucket.designation, department: bucket.department, section: bucket.section,
+              subsection: bucket.subsection, unit: bucket.unit, company: bucket.company, candidates: interviewCandidates(bucket.id, panel.stage),
+            }));
+          return structuredClone({
+            profile: { id: me.id, full_name: me.full_name ?? '', email: me.email ?? '', job_title: me.job_title, department: me.department ?? '', signature: me.signature ?? '' },
+            assignments,
+            assessments: table('interview_assessments').filter((a) => a.interviewer_key === `user:${me.id}`).sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
+          }) as T;
+        }
+        case 'save_my_details': {
+          const me = profileList().find((p) => p.id === demoUser().id)!;
+          if (me.role === 'pending') throw new BackendError('Your account has no access yet. Ask an admin.');
+          Object.assign(me, {
+            full_name: String(args.p_full_name ?? '').trim().slice(0, 200) || me.full_name,
+            job_title: String(args.p_job_title ?? '').trim().slice(0, 200),
+            department: String(args.p_department ?? '').trim().slice(0, 200),
+            signature: args.p_signature == null ? me.signature : signatureOf(args.p_signature),
+          });
+          await persist();
+          changeListeners.forEach((listener) => listener('profiles'));
+          return { id: me.id, full_name: me.full_name ?? '', email: me.email ?? '', job_title: me.job_title, department: me.department, signature: me.signature } as T;
+        }
+        case 'save_my_assessment': {
+          const me = profileList().find((p) => p.id === demoUser().id)!;
+          if (me.role === 'pending') throw new BackendError('Your account has no access yet. Ask an admin.');
+          const candidate = interviewCandidate(args.p_candidate, args.p_stage);
+          const marks = clean(args.p_payload);
+          let signature = signatureOf(args.p_signature);
+          if (!table('interview_panels').some((p) => p.bucket_id === candidate.bucket_id && p.stage === args.p_stage && p.interviewer_id === me.id)) {
+            throw new BackendError("You are not on this interview's panel. Ask HR to add you.");
+          }
+          if (!signature) signature = me.signature ?? '';
+          else if (args.p_keep_signature) me.signature = signature;
+          const saved = upsertAssessment({
+            candidate_id: candidate.id, stage: args.p_stage, interviewer_key: `user:${me.id}`, interviewer_id: me.id, interviewer_name: nameOf(me),
+            interviewer_designation: me.job_title, interviewer_department: me.department ?? '', ...marks, signature, marks_by: 'interviewer',
+            entered_by: me.id, entered_by_name: nameOf(me),
+          }, [...WHO_KEYS, ...MARK_KEYS, 'marks_by', 'entered_by', 'entered_by_name']);
+          await persist();
+          return structuredClone(saved) as T;
+        }
+        case 'get_guest_interview': {
+          const link = table('guest_links').find((l) => l.token === args.p_token);
+          if (!link) return null as T;
+          const bucket = table('cv_buckets').find((b) => b.id === link.bucket_id) as CvBucket;
+          const open = link.valid_on === todayBd();
+          const name = String(args.p_name ?? '').trim().toLowerCase();
+          return structuredClone({
+            open, valid_on: link.valid_on, stage: link.stage, designation: bucket.designation, department: bucket.department, section: bucket.section,
+            subsection: bucket.subsection, unit: bucket.unit, company: bucket.company || settings.default_company, group_name: settings.group_name,
+            candidates: open ? interviewCandidates(bucket.id, link.stage, link.valid_on) : [],
+            assessments: open && name.length >= 2
+              ? table('interview_assessments').filter((a) => a.interviewer_key === `guest:${link.id}:${name}`).map(({ entered_by: _by, ...a }) => a)
+              : [],
+          }) as T;
+        }
+        case 'save_guest_assessment': {
+          const link = table('guest_links').find((l) => l.token === args.p_token);
+          if (!link) throw new BackendError('This interview link is not valid.');
+          if (link.valid_on !== todayBd()) throw new BackendError(`This interview link was for ${link.valid_on} and has expired.`);
+          const guest = (args.p_guest ?? {}) as Row;
+          const name = String(guest.name ?? '').trim().slice(0, 200);
+          const designation = String(guest.designation ?? '').trim().slice(0, 200);
+          const marks = clean(args.p_payload);
+          const signature = signatureOf(guest.signature);
+          if (name.length < 2) throw new BackendError('Write your name first.');
+          if (!designation) throw new BackendError('Write your designation first.');
+          const candidate = interviewCandidate(args.p_candidate, link.stage);
+          if (candidate.bucket_id !== link.bucket_id) throw new BackendError('This candidate is not part of this interview.');
+          const saved = upsertAssessment({
+            candidate_id: candidate.id, stage: link.stage, interviewer_key: `guest:${link.id}:${name.toLowerCase()}`, guest_link_id: link.id,
+            interviewer_name: name, interviewer_designation: designation, interviewer_department: String(guest.department ?? '').trim().slice(0, 200),
+            ...marks, signature, marks_by: 'guest', entered_by_name: name,
+          }, [...WHO_KEYS, ...MARK_KEYS, 'marks_by']);
+          await persist();
+          const { entered_by: _by, ...visible } = structuredClone(saved);
+          return visible as T;
+        }
+        case 'moderator_save_assessment': {
+          const me = demoUser();
+          if (me.role !== 'admin' && me.role !== 'hr') throw new BackendError('Only HR and admins can enter marks for an interviewer.');
+          const candidate = interviewCandidate(args.p_candidate, args.p_stage);
+          const marks = clean(args.p_payload);
+          let who: Row;
+          let person: Profile | undefined;
+          if (args.p_interviewer) {
+            person = profileList().find((p) => p.id === args.p_interviewer);
+            if (!person) throw new BackendError('This interviewer was not found.');
+            who = { interviewer_key: `user:${person.id}`, interviewer_id: person.id, interviewer_name: nameOf(person), interviewer_designation: person.job_title, interviewer_department: person.department ?? '' };
+          } else {
+            const name = String(args.p_name ?? '').trim().slice(0, 200);
+            if (name.length < 2) throw new BackendError("Write the interviewer's name.");
+            who = { interviewer_key: `name:${name.toLowerCase()}`, interviewer_id: null, interviewer_name: name, interviewer_designation: String(args.p_designation ?? '').trim().slice(0, 200), interviewer_department: String(args.p_department ?? '').trim().slice(0, 200) };
+          }
+          const existing = table('interview_assessments').find((a) => a.candidate_id === candidate.id && a.stage === args.p_stage && a.interviewer_key === who.interviewer_key);
+          if (existing && existing.marks_by !== 'moderator' && existing.rated > 0) throw new BackendError(`${existing.interviewer_name} entered these marks. Only they can change them.`);
+          const signature = args.p_signature === 'profile' ? person?.signature ?? '' : signatureOf(args.p_signature);
+          const saved = upsertAssessment({
+            candidate_id: candidate.id, stage: args.p_stage, ...who, ...marks, signature, marks_by: 'moderator', entered_by: me.id, entered_by_name: actorName(),
+          }, [...MARK_KEYS, 'marks_by', 'entered_by', 'entered_by_name']);
+          await persist();
+          return structuredClone(saved) as T;
+        }
+        case 'moderator_sign_assessment': {
+          const me = demoUser();
+          if (me.role !== 'admin' && me.role !== 'hr') throw new BackendError('Only HR and admins can complete a form for an interviewer.');
+          const form = table('interview_assessments').find((a) => a.id === args.p_assessment);
+          if (!form) throw new BackendError('This form was not found.');
+          const signature = args.p_signature === 'profile'
+            ? profileList().find((p) => p.id === form.interviewer_id)?.signature ?? ''
+            : signatureOf(args.p_signature);
+          if (args.p_signature === 'profile' && !signature) throw new BackendError(`${form.interviewer_name} has no saved signature.`);
+          if (form.marks_by !== 'moderator' && form.signature && signature) throw new BackendError(`${form.interviewer_name} signed this form already.`);
+          if (form.marks_by === 'moderator' || !form.signature) form.signature = signature;
+          if (!form.interviewer_name) form.interviewer_name = String(args.p_name ?? '').trim().slice(0, 200);
+          if (!form.interviewer_designation) form.interviewer_designation = String(args.p_designation ?? '').trim().slice(0, 200);
+          form.updated_at = new Date().toISOString();
+          await persist();
+          return structuredClone(form) as T;
         }
       }
     },

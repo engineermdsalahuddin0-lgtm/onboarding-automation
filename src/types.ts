@@ -1,6 +1,7 @@
 // Row shapes mirror supabase/schema.sql column for column, so there is no mapping layer to drift.
 
-export type Role = 'admin' | 'hr' | 'viewer' | 'pending';
+/** interviewer: signs in only to mark the interviews they sit on. */
+export type Role = 'admin' | 'hr' | 'viewer' | 'pending' | 'interviewer';
 
 /**
  * Which part of the work a person does. Screening: receives and uploads CVs, screens them and hands the
@@ -16,6 +17,10 @@ export interface Profile {
   /** Shown beside the name, e.g. Assistant General Manager. */
   job_title: string;
   desk: Desk;
+  /** For the interview form. */
+  department: string;
+  /** The saved signature, a PNG data URL, added to each interview form this person marks. */
+  signature: string;
   created_at: string;
 }
 
@@ -512,6 +517,120 @@ export interface Question {
   created_by_name: string;
   created_at: string;
   updated_at?: string;
+}
+
+export type InterviewStage = 'primary' | 'secondary';
+
+/** One interviewer on one bucket's primary or final interview. */
+export interface InterviewPanelMember {
+  id: string;
+  bucket_id: string;
+  stage: InterviewStage;
+  interviewer_id: string;
+  created_at: string;
+}
+
+/** A link for an interviewer without an account. It works on valid_on only. */
+export interface GuestLink {
+  id: string;
+  token: string;
+  bucket_id: string;
+  stage: InterviewStage;
+  valid_on: string;
+  created_by: string | null;
+  created_by_name: string;
+  created_at: string;
+}
+
+export type MarksBy = 'interviewer' | 'guest' | 'moderator';
+export type Recommendation = '' | 'employ' | 'turn_down';
+
+/** What an interviewer fills in. Everything else on the form comes from the system. */
+export interface AssessmentInput {
+  /** Ten marks, 1 to 5, in the form's order; null for an area left empty (it counts as 0). */
+  ratings: (number | null)[];
+  strengths: string[];
+  weaknesses: string[];
+  comment: string;
+  recommendation: Recommendation;
+}
+
+/** One interviewer's Interview Assessment Form for one candidate and one interview. */
+export interface InterviewAssessment extends AssessmentInput {
+  id: string;
+  candidate_id: string;
+  stage: InterviewStage;
+  /** 'user:<account id>', 'guest:<link id>:<name>' or 'name:<name>'. */
+  interviewer_key: string;
+  interviewer_id: string | null;
+  guest_link_id: string | null;
+  interviewer_name: string;
+  interviewer_designation: string;
+  interviewer_department: string;
+  /** Out of 50. */
+  obtained: number;
+  /** How many areas were marked. 0 is an empty form, which is not counted. */
+  rated: number;
+  signature: string;
+  marks_by: MarksBy;
+  entered_by?: string | null;
+  entered_by_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A candidate as an interviewer sees them: only what the form needs. */
+export interface InterviewCandidate {
+  id: string;
+  bucket_id: string;
+  full_name: string;
+  current_designation: string;
+  date: string | null;
+  time: string;
+  status: InterviewStatus;
+  attendance: Attendance;
+}
+
+/** Where the position sits, printed at the top of the form. */
+export interface InterviewPosition {
+  designation: string;
+  department: string;
+  section: string;
+  subsection: string;
+  unit: string;
+  company: string;
+}
+
+export interface InterviewAssignment extends InterviewPosition {
+  bucket_id: string;
+  stage: InterviewStage;
+  candidates: InterviewCandidate[];
+}
+
+export interface InterviewerDetails {
+  id: string;
+  full_name: string;
+  email: string;
+  job_title: string;
+  department: string;
+  signature: string;
+}
+
+/** What my_interviews returns to a signed-in interviewer. */
+export interface MyInterviews {
+  profile: InterviewerDetails;
+  assignments: InterviewAssignment[];
+  assessments: InterviewAssessment[];
+}
+
+/** What a guest link shows. */
+export interface GuestInterview extends InterviewPosition {
+  open: boolean;
+  valid_on: string;
+  stage: InterviewStage;
+  group_name: string;
+  candidates: InterviewCandidate[];
+  assessments: InterviewAssessment[];
 }
 
 export interface PublicBucket {

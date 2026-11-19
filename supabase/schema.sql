@@ -1638,6 +1638,562 @@ create policy candidate_files_admin_delete on storage.objects for delete to auth
   using (bucket_id = 'candidate-files' and public.is_admin());
 
 -- ---------------------------------------------------------------------------
+-- Interview assessment: each interviewer marks a candidate on the company's Interview Assessment Form,
+-- 10 areas from 1 (Poor) to 5 (Outstanding). An area left empty counts as 0; a form left wholly empty is
+-- not counted at all. Interviewers sign in with an account of their own (role 'interviewer'), or come as
+-- a guest through a link that works on one day only. Admins and HR put interviewers on a bucket's primary
+-- or final interview panel. For an interviewer who could not enter marks, HR enters them; HR never changes
+-- marks an interviewer or a guest entered, but can add a missing name or signature. Everything is written
+-- through the functions below, never directly.
+-- ---------------------------------------------------------------------------
+alter table public.profiles drop constraint if exists profiles_role_check;
+alter table public.profiles add constraint profiles_role_check
+  check (role in ('admin', 'hr', 'viewer', 'pending', 'interviewer'));
+-- The interviewer's department for the form, and their saved signature (a PNG data URL), added to each form they mark.
+alter table public.profiles add column if not exists department text not null default '';
+alter table public.profiles add column if not exists signature text not null default '';
+alter table public.profiles drop constraint if exists profiles_signature_image;
+alter table public.profiles add constraint profiles_signature_image
+  check (signature = '' or (signature like 'data:image/png;base64,%' and length(signature) <= 400000));
+
+-- Interview days are Bangladesh days, whatever time zone the database runs in.
+create or replace function public.today_bd()
+returns date language sql stable set search_path = '' as $$
+  select (now() at time zone 'Asia/Dhaka')::date
+$$;
+
+-- Who sits on which interview: a bucket's primary or final interview.
+create table if not exists public.interview_panels (
+  id uuid primary key default gen_random_uuid(),
+  bucket_id uuid not null references public.cv_buckets (id) on delete cascade,
+  stage text not null check (stage in ('primary', 'secondary')),
+  interviewer_id uuid not null references public.profiles (id) on delete cascade,
+  created_by uuid default auth.uid(),
+  created_at timestamptz not null default now(),
+  unique (bucket_id, stage, interviewer_id)
+);
+
+-- A link for interviewers without an account. It shows that bucket's interview of that day, and only on that day.
+create table if not exists public.guest_links (
+  id uuid primary key default gen_random_uuid(),
+  token uuid not null unique default gen_random_uuid(),
+  bucket_id uuid not null references public.cv_buckets (id) on delete cascade,
+  stage text not null check (stage in ('primary', 'secondary')),
+  valid_on date not null default public.today_bd(),
+  created_by uuid default auth.uid(),
+  created_by_name text not null default '',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.interview_assessments (
+  id uuid primary key default gen_random_uuid(),
+  candidate_id uuid not null references public.candidates (id) on delete cascade,
+  stage text not null check (stage in ('primary', 'secondary')),
+  -- Whose form it is: 'user:<account id>', 'guest:<link id>:<name>', or 'name:<name>' for someone HR entered without an account.
+  interviewer_key text not null,
+  interviewer_id uuid references public.profiles (id) on delete set null,
+  guest_link_id uuid references public.guest_links (id) on delete set null,
+  interviewer_name text not null default '',
+  interviewer_designation text not null default '',
+  interviewer_department text not null default '',
+  -- Ten marks in the form's order, each 1 to 5, or null for an area left empty.
+  ratings jsonb not null default '[]',
+  -- Out of 50: the empty areas count as 0. rated says how many areas were marked; 0 means an empty form.
+  obtained numeric(4, 1) not null default 0,
+  rated int not null default 0,
+  strengths jsonb not null default '[]',
+  weaknesses jsonb not null default '[]',
+  comment text not null default '',
+  recommendation text not null default '' check (recommendation in ('', 'employ', 'turn_down')),
+  signature text not null default '',
+  -- Who entered the marks: the interviewer, a guest, or HR (the moderator) on the interviewer's behalf.
+  marks_by text not null default 'interviewer' check (marks_by in ('interviewer', 'guest', 'moderator')),
+  entered_by uuid,
+  entered_by_name text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (candidate_id, stage, interviewer_key)
+);
+
+create index if not exists interview_assessments_candidate_idx on public.interview_assessments (candidate_id, stage);
+create index if not exists interview_panels_interviewer_idx on public.interview_panels (interviewer_id);
+
+-- Only interviewers and staff accounts sit on a panel.
+create or replace function public.check_panel_member()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if not exists (select 1 from public.profiles where id = new.interviewer_id and role in ('admin', 'hr', 'interviewer')) then
+    raise exception 'Only interviewer and staff accounts can sit on an interview panel.';
+  end if;
+  if auth.uid() is not null then
+    new.created_by := auth.uid();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists interview_panels_check on public.interview_panels;
+create trigger interview_panels_check
+  before insert on public.interview_panels
+  for each row execute function public.check_panel_member();
+
+-- A guest link's token is always made by the database, and the link records who made it.
+create or replace function public.stamp_guest_link()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  new.token := gen_random_uuid();
+  if auth.uid() is not null then
+    new.created_by := auth.uid();
+    new.created_by_name := public.actor_name();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists guest_links_stamp on public.guest_links;
+create trigger guest_links_stamp
+  before insert on public.guest_links
+  for each row execute function public.stamp_guest_link();
+
+-- A form as sent by the app, checked and cut to size: the ten marks, the score, and the remarks.
+create or replace function public.assessment_clean(p_payload jsonb)
+returns jsonb language plpgsql immutable set search_path = '' as $$
+declare
+  ratings jsonb := '[]';
+  mark jsonb;
+  total int := 0;
+  marked int := 0;
+  i int;
+  list_name text;
+  lists jsonb := '{}';
+  items jsonb;
+begin
+  if jsonb_typeof(p_payload) is distinct from 'object' then
+    raise exception 'The form could not be read.';
+  end if;
+  for i in 0..9 loop
+    mark := p_payload -> 'ratings' -> i;
+    if mark is null or jsonb_typeof(mark) = 'null' then
+      ratings := ratings || jsonb_build_array(null);
+    elsif jsonb_typeof(mark) = 'number' and (mark #>> '{}')::numeric in (1, 2, 3, 4, 5) then
+      ratings := ratings || jsonb_build_array((mark #>> '{}')::numeric::int);
+      total := total + (mark #>> '{}')::numeric::int;
+      marked := marked + 1;
+    else
+      raise exception 'Each area takes a mark from 1 to 5.';
+    end if;
+  end loop;
+  foreach list_name in array array['strengths', 'weaknesses'] loop
+    items := '[]';
+    if jsonb_typeof(p_payload -> list_name) = 'array' then
+      select coalesce(jsonb_agg(left(btrim(s.t), 300) order by s.n), '[]') into items
+      from (
+        select e.t, e.n from jsonb_array_elements_text(p_payload -> list_name) with ordinality as e (t, n)
+        where btrim(e.t) <> '' order by e.n limit 5
+      ) s;
+    end if;
+    lists := lists || jsonb_build_object(list_name, items);
+  end loop;
+  return jsonb_build_object(
+    'ratings', ratings,
+    'obtained', total,
+    'rated', marked,
+    'strengths', lists -> 'strengths',
+    'weaknesses', lists -> 'weaknesses',
+    'comment', left(btrim(coalesce(p_payload ->> 'comment', '')), 2000),
+    'recommendation', case when p_payload ->> 'recommendation' in ('employ', 'turn_down') then p_payload ->> 'recommendation' else '' end
+  );
+end;
+$$;
+
+-- A drawn signature: a PNG data URL of reasonable size, or nothing.
+create or replace function public.clean_signature(p_signature text)
+returns text language plpgsql immutable set search_path = '' as $$
+begin
+  if coalesce(p_signature, '') = '' then
+    return '';
+  end if;
+  if p_signature !~ '^data:image/png;base64,[A-Za-z0-9+/=]+$' or length(p_signature) > 400000 then
+    raise exception 'The signature could not be read. Please sign again.';
+  end if;
+  return p_signature;
+end;
+$$;
+
+-- The candidates of one bucket's primary or final interview, with only what the form needs. With a day,
+-- only those interviewed that day (and any without a day set).
+create or replace function public.interview_candidates(p_bucket uuid, p_stage text, p_day date default null)
+returns jsonb language sql stable security definer set search_path = '' as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'id', x.id, 'bucket_id', x.bucket_id, 'full_name', x.full_name, 'current_designation', x.current_designation,
+      'date', x.day, 'time', x.at, 'status', x.status, 'attendance', x.attendance
+    ) order by x.day nulls last, x.at, x.full_name), '[]')
+  from (
+    select c.id, c.bucket_id, c.full_name, c.current_designation,
+      case when p_stage = 'primary' then c.primary_date else c.secondary_date end as day,
+      case when p_stage = 'primary' then c.primary_time else c.secondary_time end as at,
+      case when p_stage = 'primary' then c.primary_status else c.secondary_status end as status,
+      case when p_stage = 'primary' then c.primary_attendance else c.secondary_attendance end as attendance
+    from public.candidates c
+    where c.bucket_id = p_bucket
+      and case when p_stage = 'primary' then c.message_status = 'message_done' else c.secondary_status <> 'pending' end
+  ) x
+  where p_day is null or x.day is null or x.day = p_day
+$$;
+
+-- The candidate, if their primary or final interview has been scheduled.
+create or replace function public.interview_candidate(p_candidate uuid, p_stage text)
+returns public.candidates language plpgsql stable security definer set search_path = '' as $$
+declare
+  cand public.candidates%rowtype;
+begin
+  if p_stage is null or p_stage not in ('primary', 'secondary') then
+    raise exception 'There is no interview called %.', coalesce(p_stage, '');
+  end if;
+  select * into cand from public.candidates where id = p_candidate;
+  if not found then
+    raise exception 'This candidate was not found.';
+  end if;
+  if not (case when p_stage = 'primary' then cand.message_status = 'message_done' else cand.secondary_status <> 'pending' end) then
+    raise exception 'This candidate''s % interview is not scheduled yet.', case when p_stage = 'primary' then 'primary' else 'final' end;
+  end if;
+  return cand;
+end;
+$$;
+
+-- What a signed-in interviewer sees: their details, the interviews they sit on with each candidate, and their own forms.
+create or replace function public.my_interviews()
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare
+  me public.profiles%rowtype;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if not found or me.role = 'pending' then
+    raise exception 'Your account has no access yet. Ask an admin.';
+  end if;
+  return jsonb_build_object(
+    'profile', jsonb_build_object(
+      'id', me.id, 'full_name', coalesce(me.full_name, ''), 'email', coalesce(me.email, ''),
+      'job_title', me.job_title, 'department', me.department, 'signature', me.signature
+    ),
+    'assignments', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'bucket_id', b.id, 'stage', p.stage, 'designation', b.designation, 'department', b.department,
+        'section', b.section, 'subsection', b.subsection, 'unit', b.unit, 'company', b.company,
+        'candidates', public.interview_candidates(b.id, p.stage)
+      ) order by b.created_at desc, p.stage)
+      from public.interview_panels p join public.cv_buckets b on b.id = p.bucket_id
+      where p.interviewer_id = me.id and b.status <> 'Archived'
+    ), '[]'),
+    'assessments', coalesce((
+      select jsonb_agg(to_jsonb(a) order by a.updated_at desc)
+      from public.interview_assessments a where a.interviewer_key = 'user:' || me.id::text
+    ), '[]')
+  );
+end;
+$$;
+
+-- Anyone signed in keeps their own name, designation, department and signature up to date.
+create or replace function public.save_my_details(p_full_name text, p_job_title text, p_department text, p_signature text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  saved public.profiles%rowtype;
+begin
+  update public.profiles set
+    full_name = coalesce(nullif(left(btrim(coalesce(p_full_name, '')), 200), ''), full_name),
+    job_title = left(btrim(coalesce(p_job_title, '')), 200),
+    department = left(btrim(coalesce(p_department, '')), 200),
+    signature = case when p_signature is null then signature else public.clean_signature(p_signature) end
+  where id = auth.uid() and role <> 'pending'
+  returning * into saved;
+  if not found then
+    raise exception 'Your account has no access yet. Ask an admin.';
+  end if;
+  return jsonb_build_object('id', saved.id, 'full_name', coalesce(saved.full_name, ''), 'email', coalesce(saved.email, ''),
+    'job_title', saved.job_title, 'department', saved.department, 'signature', saved.signature);
+end;
+$$;
+
+-- An interviewer on the panel marks a candidate, or changes their own marks, including marks HR entered for them.
+-- With no signature drawn, their saved one is used; p_keep_signature saves a drawn one to their profile.
+create or replace function public.save_my_assessment(
+  p_candidate uuid, p_stage text, p_payload jsonb, p_signature text default '', p_keep_signature boolean default false
+)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  me public.profiles%rowtype;
+  cand public.candidates%rowtype;
+  clean jsonb := public.assessment_clean(p_payload);
+  sig text := public.clean_signature(p_signature);
+  my_name text;
+  saved public.interview_assessments%rowtype;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if not found or me.role = 'pending' then
+    raise exception 'Your account has no access yet. Ask an admin.';
+  end if;
+  cand := public.interview_candidate(p_candidate, p_stage);
+  if not exists (select 1 from public.interview_panels where bucket_id = cand.bucket_id and stage = p_stage and interviewer_id = me.id) then
+    raise exception 'You are not on this interview''s panel. Ask HR to add you.';
+  end if;
+  if sig = '' then
+    sig := me.signature;
+  elsif p_keep_signature then
+    update public.profiles set signature = sig where id = me.id;
+  end if;
+  my_name := coalesce(nullif(me.full_name, ''), me.email, '');
+  insert into public.interview_assessments as a (
+    candidate_id, stage, interviewer_key, interviewer_id, interviewer_name, interviewer_designation, interviewer_department,
+    ratings, obtained, rated, strengths, weaknesses, comment, recommendation, signature, marks_by, entered_by, entered_by_name
+  ) values (
+    cand.id, p_stage, 'user:' || me.id::text, me.id, my_name, me.job_title, me.department,
+    clean -> 'ratings', (clean ->> 'obtained')::numeric, (clean ->> 'rated')::int, clean -> 'strengths', clean -> 'weaknesses',
+    clean ->> 'comment', clean ->> 'recommendation', sig, 'interviewer', me.id, my_name
+  )
+  on conflict (candidate_id, stage, interviewer_key) do update set
+    interviewer_name = excluded.interviewer_name,
+    interviewer_designation = excluded.interviewer_designation,
+    interviewer_department = excluded.interviewer_department,
+    ratings = excluded.ratings, obtained = excluded.obtained, rated = excluded.rated,
+    strengths = excluded.strengths, weaknesses = excluded.weaknesses, comment = excluded.comment,
+    recommendation = excluded.recommendation,
+    signature = case when excluded.signature <> '' then excluded.signature else a.signature end,
+    marks_by = 'interviewer', entered_by = excluded.entered_by, entered_by_name = excluded.entered_by_name, updated_at = now()
+  returning * into saved;
+  return to_jsonb(saved);
+end;
+$$;
+
+-- What a guest link shows: the interview, that day's candidates, and the forms this guest already sent.
+create or replace function public.get_guest_interview(p_token uuid, p_name text default '')
+returns jsonb language sql stable security definer set search_path = '' as $$
+  select jsonb_build_object(
+    'open', l.valid_on = public.today_bd(),
+    'valid_on', l.valid_on,
+    'stage', l.stage,
+    'designation', b.designation,
+    'department', b.department,
+    'section', b.section,
+    'subsection', b.subsection,
+    'unit', b.unit,
+    'company', coalesce(nullif(b.company, ''), s.default_company, ''),
+    'group_name', coalesce(s.group_name, ''),
+    'candidates', case when l.valid_on = public.today_bd() then public.interview_candidates(b.id, l.stage, l.valid_on) else '[]'::jsonb end,
+    'assessments', case when l.valid_on = public.today_bd() and length(btrim(coalesce(p_name, ''))) >= 2 then coalesce((
+      select jsonb_agg(to_jsonb(a) - 'entered_by' order by a.updated_at desc) from public.interview_assessments a
+      where a.interviewer_key = 'guest:' || l.id::text || ':' || lower(btrim(p_name))
+    ), '[]') else '[]'::jsonb end
+  )
+  from public.guest_links l
+  join public.cv_buckets b on b.id = l.bucket_id
+  left join public.settings s on s.id = 1
+  where l.token = p_token
+$$;
+
+-- A guest marks a candidate. The same name on the same link changes that guest's own form.
+create or replace function public.save_guest_assessment(p_token uuid, p_candidate uuid, p_guest jsonb, p_payload jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  link public.guest_links%rowtype;
+  cand public.candidates%rowtype;
+  clean jsonb := public.assessment_clean(p_payload);
+  guest_name text := left(btrim(coalesce(p_guest ->> 'name', '')), 200);
+  guest_designation text := left(btrim(coalesce(p_guest ->> 'designation', '')), 200);
+  guest_department text := left(btrim(coalesce(p_guest ->> 'department', '')), 200);
+  sig text := public.clean_signature(p_guest ->> 'signature');
+  saved public.interview_assessments%rowtype;
+begin
+  select * into link from public.guest_links where token = p_token;
+  if not found then
+    raise exception 'This interview link is not valid.';
+  end if;
+  if link.valid_on <> public.today_bd() then
+    raise exception 'This interview link was for % and has expired.', to_char(link.valid_on, 'DD Mon YYYY');
+  end if;
+  if length(guest_name) < 2 then
+    raise exception 'Write your name first.';
+  end if;
+  if guest_designation = '' then
+    raise exception 'Write your designation first.';
+  end if;
+  cand := public.interview_candidate(p_candidate, link.stage);
+  if cand.bucket_id <> link.bucket_id then
+    raise exception 'This candidate is not part of this interview.';
+  end if;
+  insert into public.interview_assessments as a (
+    candidate_id, stage, interviewer_key, guest_link_id, interviewer_name, interviewer_designation, interviewer_department,
+    ratings, obtained, rated, strengths, weaknesses, comment, recommendation, signature, marks_by, entered_by_name
+  ) values (
+    cand.id, link.stage, 'guest:' || link.id::text || ':' || lower(guest_name), link.id, guest_name, guest_designation, guest_department,
+    clean -> 'ratings', (clean ->> 'obtained')::numeric, (clean ->> 'rated')::int, clean -> 'strengths', clean -> 'weaknesses',
+    clean ->> 'comment', clean ->> 'recommendation', sig, 'guest', guest_name
+  )
+  on conflict (candidate_id, stage, interviewer_key) do update set
+    interviewer_name = excluded.interviewer_name,
+    interviewer_designation = excluded.interviewer_designation,
+    interviewer_department = excluded.interviewer_department,
+    ratings = excluded.ratings, obtained = excluded.obtained, rated = excluded.rated,
+    strengths = excluded.strengths, weaknesses = excluded.weaknesses, comment = excluded.comment,
+    recommendation = excluded.recommendation,
+    signature = case when excluded.signature <> '' then excluded.signature else a.signature end,
+    marks_by = 'guest', updated_at = now()
+  returning * into saved;
+  return to_jsonb(saved) - 'entered_by';
+end;
+$$;
+
+-- HR (the moderator) enters the marks of an interviewer who could not: one with an account (p_interviewer), or
+-- anyone else by name. HR can change only marks HR entered. The signature stays empty unless HR adds one:
+-- a drawn one, or 'profile' for the interviewer's saved signature.
+create or replace function public.moderator_save_assessment(
+  p_candidate uuid, p_stage text, p_interviewer uuid, p_name text, p_designation text, p_department text,
+  p_payload jsonb, p_signature text default ''
+)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  cand public.candidates%rowtype;
+  clean jsonb := public.assessment_clean(p_payload);
+  who public.profiles%rowtype;
+  who_key text;
+  name_value text;
+  designation_value text;
+  department_value text;
+  existing public.interview_assessments%rowtype;
+  sig text;
+  actor text := public.actor_name();
+  saved public.interview_assessments%rowtype;
+begin
+  if not public.can_write() then
+    raise exception 'Only HR and admins can enter marks for an interviewer.';
+  end if;
+  cand := public.interview_candidate(p_candidate, p_stage);
+  if p_interviewer is not null then
+    select * into who from public.profiles where id = p_interviewer;
+    if not found then
+      raise exception 'This interviewer was not found.';
+    end if;
+    who_key := 'user:' || who.id::text;
+    name_value := coalesce(nullif(who.full_name, ''), who.email, '');
+    designation_value := who.job_title;
+    department_value := who.department;
+  else
+    name_value := left(btrim(coalesce(p_name, '')), 200);
+    if length(name_value) < 2 then
+      raise exception 'Write the interviewer''s name.';
+    end if;
+    who_key := 'name:' || lower(name_value);
+    designation_value := left(btrim(coalesce(p_designation, '')), 200);
+    department_value := left(btrim(coalesce(p_department, '')), 200);
+  end if;
+  select * into existing from public.interview_assessments
+    where candidate_id = cand.id and stage = p_stage and interviewer_key = who_key;
+  -- A form the interviewer left wholly empty counts as not filled, so HR may fill it.
+  if found and existing.marks_by <> 'moderator' and existing.rated > 0 then
+    raise exception '% entered these marks. Only they can change them.', existing.interviewer_name;
+  end if;
+  sig := case when p_signature = 'profile' then coalesce(who.signature, '') else public.clean_signature(p_signature) end;
+  insert into public.interview_assessments as a (
+    candidate_id, stage, interviewer_key, interviewer_id, interviewer_name, interviewer_designation, interviewer_department,
+    ratings, obtained, rated, strengths, weaknesses, comment, recommendation, signature, marks_by, entered_by, entered_by_name
+  ) values (
+    cand.id, p_stage, who_key, p_interviewer, name_value, designation_value, department_value,
+    clean -> 'ratings', (clean ->> 'obtained')::numeric, (clean ->> 'rated')::int, clean -> 'strengths', clean -> 'weaknesses',
+    clean ->> 'comment', clean ->> 'recommendation', sig, 'moderator', auth.uid(), actor
+  )
+  on conflict (candidate_id, stage, interviewer_key) do update set
+    ratings = excluded.ratings, obtained = excluded.obtained, rated = excluded.rated,
+    strengths = excluded.strengths, weaknesses = excluded.weaknesses, comment = excluded.comment,
+    recommendation = excluded.recommendation,
+    signature = case when excluded.signature <> '' then excluded.signature else a.signature end,
+    marks_by = 'moderator', entered_by = excluded.entered_by, entered_by_name = excluded.entered_by_name, updated_at = now()
+  returning * into saved;
+  return to_jsonb(saved);
+end;
+$$;
+
+-- HR adds a name, designation or signature an interviewer or guest left out. On a form HR entered, HR can
+-- also replace or remove the signature ('' removes it there). 'profile' uses the interviewer's saved signature.
+create or replace function public.moderator_sign_assessment(p_assessment uuid, p_name text, p_designation text, p_signature text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  existing public.interview_assessments%rowtype;
+  sig text;
+  saved public.interview_assessments%rowtype;
+begin
+  if not public.can_write() then
+    raise exception 'Only HR and admins can complete a form for an interviewer.';
+  end if;
+  select * into existing from public.interview_assessments where id = p_assessment for update;
+  if not found then
+    raise exception 'This form was not found.';
+  end if;
+  sig := case
+    when p_signature = 'profile' then coalesce((select signature from public.profiles where id = existing.interviewer_id), '')
+    else public.clean_signature(p_signature)
+  end;
+  if p_signature = 'profile' and sig = '' then
+    raise exception '% has no saved signature.', existing.interviewer_name;
+  end if;
+  if existing.marks_by <> 'moderator' and existing.signature <> '' and sig <> '' then
+    raise exception '% signed this form already.', existing.interviewer_name;
+  end if;
+  update public.interview_assessments set
+    signature = case when existing.marks_by = 'moderator' or signature = '' then sig else signature end,
+    interviewer_name = case when interviewer_name = '' then left(btrim(coalesce(p_name, '')), 200) else interviewer_name end,
+    interviewer_designation = case when interviewer_designation = '' then left(btrim(coalesce(p_designation, '')), 200) else interviewer_designation end,
+    updated_at = now()
+  where id = p_assessment
+  returning * into saved;
+  return to_jsonb(saved);
+end;
+$$;
+
+alter table public.interview_panels enable row level security;
+alter table public.guest_links enable row level security;
+alter table public.interview_assessments enable row level security;
+
+-- Staff read panels and links; HR and admins add and remove them. Interviewers reach them only through my_interviews.
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['interview_panels', 'guest_links'] loop
+    execute format('drop policy if exists %I on public.%I', t || '_select', t);
+    execute format('create policy %I on public.%I for select to authenticated using (public.can_read())', t || '_select', t);
+    execute format('drop policy if exists %I on public.%I', t || '_insert', t);
+    execute format('create policy %I on public.%I for insert to authenticated with check (public.can_write())', t || '_insert', t);
+    execute format('drop policy if exists %I on public.%I', t || '_delete', t);
+    execute format('create policy %I on public.%I for delete to authenticated using (public.can_write())', t || '_delete', t);
+  end loop;
+end;
+$$;
+revoke update on public.interview_panels, public.guest_links from anon, authenticated;
+
+-- Forms: staff read them, only an admin deletes one, and they are written only through the functions above.
+drop policy if exists interview_assessments_select on public.interview_assessments;
+create policy interview_assessments_select on public.interview_assessments for select to authenticated using (public.can_read());
+drop policy if exists interview_assessments_delete on public.interview_assessments;
+create policy interview_assessments_delete on public.interview_assessments for delete to authenticated using (public.is_admin());
+revoke insert, update on public.interview_assessments from anon, authenticated;
+
+revoke all on function public.interview_candidates(uuid, text, date) from public, anon, authenticated;
+revoke all on function public.interview_candidate(uuid, text) from public, anon, authenticated;
+revoke all on function public.my_interviews() from public;
+revoke all on function public.save_my_details(text, text, text, text) from public;
+revoke all on function public.save_my_assessment(uuid, text, jsonb, text, boolean) from public;
+revoke all on function public.get_guest_interview(uuid, text) from public;
+revoke all on function public.save_guest_assessment(uuid, uuid, jsonb, jsonb) from public;
+revoke all on function public.moderator_save_assessment(uuid, text, uuid, text, text, text, jsonb, text) from public;
+revoke all on function public.moderator_sign_assessment(uuid, text, text, text) from public;
+grant execute on function public.my_interviews() to authenticated;
+grant execute on function public.save_my_details(text, text, text, text) to authenticated;
+grant execute on function public.save_my_assessment(uuid, text, jsonb, text, boolean) to authenticated;
+grant execute on function public.get_guest_interview(uuid, text) to anon, authenticated;
+grant execute on function public.save_guest_assessment(uuid, uuid, jsonb, jsonb) to anon, authenticated;
+grant execute on function public.moderator_save_assessment(uuid, text, uuid, text, text, text, jsonb, text) to authenticated;
+grant execute on function public.moderator_sign_assessment(uuid, text, text, text) to authenticated;
+
+-- ---------------------------------------------------------------------------
 -- Realtime: lets several HR users see each other's status changes without reloading
 -- ---------------------------------------------------------------------------
 do $$
@@ -1645,7 +2201,7 @@ declare
   t text;
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    foreach t in array array['candidates', 'cv_buckets', 'requisitions', 'job_postings', 'designations', 'candidate_reviews', 'notifications', 'profiles', 'questions', 'edit_requests'] loop
+    foreach t in array array['candidates', 'cv_buckets', 'requisitions', 'job_postings', 'designations', 'candidate_reviews', 'notifications', 'profiles', 'questions', 'edit_requests', 'interview_panels', 'guest_links', 'interview_assessments'] loop
       if not exists (
         select 1 from pg_publication_tables
         where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t

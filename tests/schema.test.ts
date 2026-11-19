@@ -628,7 +628,7 @@ describe('app rows match the database columns', () => {
         )).rows.map((r) => r.column_name),
       );
 
-    for (const table of ['settings', 'message_templates', 'document_templates', 'designations', 'requisitions', 'job_postings', 'cv_buckets', 'candidates', 'candidate_reviews', 'cv_review_sessions', 'profiles', 'notifications', 'questions', 'candidate_events'] as const) {
+    for (const table of ['settings', 'message_templates', 'document_templates', 'designations', 'requisitions', 'job_postings', 'cv_buckets', 'candidates', 'candidate_reviews', 'cv_review_sessions', 'profiles', 'notifications', 'questions', 'candidate_events', 'interview_panels', 'interview_assessments'] as const) {
       const columns = await columnsOf(table);
       expect(columns.size, table).toBeGreaterThan(0);
       for (const row of data[table] as object[]) {
@@ -919,5 +919,132 @@ describe('units and the vacancy sheet', () => {
     expect(made.grade).toBe('MS-12');
     const [plain] = await as(HR, `insert into requisitions (designation) values ('Incharge') returning grade`);
     expect(plain.grade).toBe('');
+  });
+});
+
+describe('interview assessment forms', () => {
+  const MIZAN = '00000000-0000-4000-8000-0000000000e1';
+  const OTHER = '00000000-0000-4000-8000-0000000000e2';
+  const SIGN = 'data:image/png;base64,iVBORw0KGgo=';
+  // The marks on the company's paper form: 23 out of 50.
+  const PAPER = { ratings: [3, 2, 2, 2, 3, 2, 2, 2, 2, 3], strengths: [], weaknesses: ['Shy'], comment: 'Below average', recommendation: 'turn_down' };
+  let bucket: string;
+  let scheduled: string;
+  let notYet: string;
+
+  const mark = (user: string, candidate: string, payload: object, signature = '', keep = false) =>
+    as(user, `select save_my_assessment($1, 'primary', $2::jsonb, $3, $4) as r`, [candidate, JSON.stringify(payload), signature, keep]).then((rows) => rows[0].r);
+  const moderate = (user: string, candidate: string, interviewer: string | null, name: string, payload: object, signature = '') =>
+    as(user, `select moderator_save_assessment($1, 'primary', $2, $3, 'Director', '', $4::jsonb, $5) as r`, [candidate, interviewer, name, JSON.stringify(payload), signature]).then((rows) => rows[0].r);
+
+  beforeAll(async () => {
+    for (const [id, email, name] of [[MIZAN, 'mizan@x.com', 'Mizanur Rahman'], [OTHER, 'other@x.com', 'Other Interviewer']]) {
+      await db.query(`insert into auth.users (id, email, raw_user_meta_data) values ($1, $2, jsonb_build_object('full_name', $3::text))`, [id, email, name]);
+      await db.query(`update public.profiles set role = 'interviewer', job_title = 'GM', department = 'HR & Admin' where id = $1`, [id]);
+    }
+    bucket = await makeBucket('assess-bucket');
+    scheduled = await addCandidate(bucket, 'Mahmud Goni');
+    notYet = await addCandidate(bucket, 'Not Scheduled');
+    await as(HR, `update candidates set screening_status = 'shortlisted', call_status = 'confirm', message_status = 'message_done',
+      primary_status = 'scheduled', primary_date = public.today_bd() where id = $1`, [scheduled]);
+    await as(HR, `insert into interview_panels (bucket_id, stage, interviewer_id) values ($1, 'primary', $2)`, [bucket, MIZAN]);
+  });
+
+  it('keeps candidate data from interviewers, and lets only HR set panels', async () => {
+    expect(await as(MIZAN, 'select id from candidates')).toEqual([]);
+    expect(await as(MIZAN, 'select id from interview_assessments')).toEqual([]);
+    expect(await as(MIZAN, 'select id from interview_panels')).toEqual([]);
+    await expect(as(MIZAN, `insert into interview_panels (bucket_id, stage, interviewer_id) values ($1, 'secondary', $2)`, [bucket, MIZAN])).rejects.toThrow(/row-level security/);
+    await expect(as(HR, `insert into interview_panels (bucket_id, stage, interviewer_id) values ($1, 'secondary', $2)`, [bucket, VIEWER])).rejects.toThrow(/Only interviewer and staff/);
+    await expect(as(MIZAN, `insert into interview_assessments (candidate_id, stage, interviewer_key) values ($1, 'primary', 'x')`, [scheduled])).rejects.toThrow(/permission denied/);
+  });
+
+  it("shows an interviewer only their panel's scheduled candidates", async () => {
+    const [{ r }] = await as(MIZAN, 'select my_interviews() as r');
+    expect(r.profile).toMatchObject({ full_name: 'Mizanur Rahman', job_title: 'GM', department: 'HR & Admin' });
+    expect(r.assignments).toHaveLength(1);
+    expect(r.assignments[0]).toMatchObject({ stage: 'primary', designation: 'Jr. Executive' });
+    expect(r.assignments[0].candidates.map((c: any) => c.full_name)).toEqual(['Mahmud Goni']);
+    expect(Object.keys(r.assignments[0].candidates[0])).not.toContain('phone');
+    const [{ r: other }] = await as(OTHER, 'select my_interviews() as r');
+    expect(other.assignments).toEqual([]);
+  });
+
+  it('works out the score, counts an empty area as 0 and rejects marks outside 1 to 5', async () => {
+    const saved = await mark(MIZAN, scheduled, PAPER, SIGN, true);
+    expect(saved).toMatchObject({ obtained: 23, rated: 10, marks_by: 'interviewer', interviewer_name: 'Mizanur Rahman', interviewer_designation: 'GM', signature: SIGN, recommendation: 'turn_down' });
+    expect((await db.query<any>('select signature from profiles where id = $1', [MIZAN])).rows[0].signature).toBe(SIGN);
+    const partial = await mark(MIZAN, scheduled, { ...PAPER, ratings: [5, null, 4] });
+    expect(partial).toMatchObject({ obtained: 9, rated: 2, signature: SIGN });
+    expect(partial.ratings).toEqual([5, null, 4, null, null, null, null, null, null, null]);
+    await expect(mark(MIZAN, scheduled, { ratings: [6] })).rejects.toThrow(/from 1 to 5/);
+    await expect(mark(MIZAN, scheduled, { ratings: [2.5] })).rejects.toThrow(/from 1 to 5/);
+    await expect(mark(MIZAN, scheduled, PAPER, 'not-an-image')).rejects.toThrow(/signature/);
+    await mark(MIZAN, scheduled, PAPER);
+  });
+
+  it('refuses interviewers off the panel and interviews not scheduled', async () => {
+    await expect(mark(OTHER, scheduled, PAPER)).rejects.toThrow(/not on this interview's panel/);
+    await expect(mark(MIZAN, notYet, PAPER)).rejects.toThrow(/not scheduled/);
+    await expect(as(null, `select save_my_assessment($1, 'primary', '{}'::jsonb)`, [scheduled])).rejects.toThrow(/permission denied/);
+  });
+
+  it("lets HR enter marks for an interviewer, but never change an interviewer's own", async () => {
+    await expect(moderate(HR, scheduled, MIZAN, '', PAPER)).rejects.toThrow(/Mizanur Rahman entered these marks/);
+    await expect(moderate(VIEWER, scheduled, OTHER, '', PAPER)).rejects.toThrow(/Only HR and admins/);
+    const forOther = await moderate(HR, scheduled, OTHER, '', { ...PAPER, ratings: [4, 4, 4, 4, 4, 4, 4, 4, 4, 4] });
+    expect(forOther).toMatchObject({ obtained: 40, marks_by: 'moderator', entered_by_name: 'hr', interviewer_name: 'Other Interviewer', signature: '' });
+    const changed = await moderate(HR, scheduled, OTHER, '', { ...PAPER, ratings: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5] });
+    expect(changed).toMatchObject({ id: forOther.id, obtained: 50 });
+    const byName = await moderate(ADMIN, scheduled, null, 'Outside Expert', PAPER);
+    expect(byName).toMatchObject({ interviewer_key: 'name:outside expert', interviewer_designation: 'Director', marks_by: 'moderator' });
+    // The interviewer can still take over the marks HR entered for them.
+    await as(HR, `insert into interview_panels (bucket_id, stage, interviewer_id) values ($1, 'primary', $2)`, [bucket, OTHER]);
+    const own = await mark(OTHER, scheduled, PAPER);
+    expect(own).toMatchObject({ id: forOther.id, marks_by: 'interviewer', obtained: 23 });
+  });
+
+  it('lets HR add a missing signature, but not replace an interviewer\'s', async () => {
+    const [{ id }] = await as(HR, `select id from interview_assessments where interviewer_key = 'name:outside expert'`);
+    const [{ r: signed }] = await as(HR, `select moderator_sign_assessment($1, '', '', $2) as r`, [id, SIGN]);
+    expect(signed.signature).toBe(SIGN);
+    const [{ id: mine }] = await as(HR, `select id from interview_assessments where interviewer_key = $1`, [`user:${MIZAN}`]);
+    await expect(as(HR, `select moderator_sign_assessment($1, '', '', $2)`, [mine, SIGN])).rejects.toThrow(/signed this form already/);
+    await expect(as(HR, `delete from interview_assessments where id = $1 returning id`, [id])).resolves.toEqual([]);
+    await as(ADMIN, `delete from interview_assessments where id = $1`, [id]);
+  });
+
+  it('gives guests a one-day link and keeps each guest to their own form', async () => {
+    const [link] = await as(HR, `insert into guest_links (bucket_id, stage, token, valid_on) values ($1, 'primary', '00000000-0000-4000-8000-00000000beef', public.today_bd()) returning token, created_by_name`, [bucket]);
+    // The token is always the database's own.
+    expect(link.token).not.toBe('00000000-0000-4000-8000-00000000beef');
+    expect(link.created_by_name).toBe('hr');
+    const [{ r: page }] = await as(null, 'select get_guest_interview($1) as r', [link.token]);
+    expect(page).toMatchObject({ open: true, stage: 'primary', designation: 'Jr. Executive' });
+    expect(page.candidates.map((c: any) => c.full_name)).toEqual(['Mahmud Goni']);
+
+    const guest = { name: 'Guest Expert', designation: 'Consultant', signature: SIGN };
+    const send = (who: object) => as(null, `select save_guest_assessment($1, $2, $3::jsonb, $4::jsonb) as r`, [link.token, scheduled, JSON.stringify(who), JSON.stringify(PAPER)]);
+    await expect(send({ designation: 'X' })).rejects.toThrow(/your name/);
+    await expect(send({ name: 'Guest Expert' })).rejects.toThrow(/your designation/);
+    const [{ r: saved }] = await send(guest);
+    expect(saved).toMatchObject({ marks_by: 'guest', obtained: 23, interviewer_name: 'Guest Expert' });
+    expect(saved.entered_by).toBeUndefined();
+    const [{ r: again }] = await send(guest);
+    expect(again.id).toBe(saved.id);
+    const [{ r: theirs }] = await as(null, `select get_guest_interview($1, 'guest expert') as r`, [link.token]);
+    expect(theirs.assessments).toHaveLength(1);
+
+    const [old] = await as(HR, `insert into guest_links (bucket_id, stage, valid_on) values ($1, 'primary', public.today_bd() - 1) returning token`, [bucket]);
+    const [{ r: expired }] = await as(null, 'select get_guest_interview($1) as r', [old.token]);
+    expect(expired).toMatchObject({ open: false, candidates: [] });
+    await expect(as(null, `select save_guest_assessment($1, $2, $3::jsonb, $4::jsonb)`, [old.token, scheduled, JSON.stringify(guest), JSON.stringify(PAPER)])).rejects.toThrow(/expired/);
+    expect(await as(null, 'select * from guest_links')).toEqual([]);
+  });
+
+  it('lets each person keep their own details and signature', async () => {
+    const [{ r }] = await as(MIZAN, `select save_my_details('Mizanur Rahman', 'General Manager', 'HR & Admin', '') as r`);
+    expect(r).toMatchObject({ job_title: 'General Manager', signature: '' });
+    await expect(as(STRANGER, `select save_my_details('X', '', '', null)`)).rejects.toThrow(/no access/);
   });
 });

@@ -3,6 +3,7 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { aiStatus, authorize, parseCv, ParseError } from './ai.js';
+import { createInterviewer } from './team.js';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -31,6 +32,16 @@ app.post('/api/ai/parse-cv', aiLimiter, express.json({ limit: '21mb' }), async (
   try {
     const context = await authorize(req.headers.authorization, req.headers['x-demo-ai-key']);
     res.json({ data: await parseCv(context, req.body) });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+const teamLimiter = rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false });
+
+app.post('/api/team/interviewers', teamLimiter, express.json({ limit: '50kb' }), async (req, res) => {
+  try {
+    res.json(await createInterviewer(req.headers.authorization, req.body));
   } catch (error) {
     sendError(res, error);
   }

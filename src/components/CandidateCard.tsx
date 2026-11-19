@@ -38,6 +38,7 @@ import { HelpTip, useGuide } from './Guide';
 import type { Candidate, CandidateEvent, CvReviewSession, EditStep, InterviewerScore, MessageLogEntry } from '../types';
 import { CorrectionsStrip, RequestCorrectionDialog } from './Corrections';
 import { HandoverDialog } from './HandoverDialog';
+import { AssessmentsSection, interviewReached } from './InterviewPanel';
 import { CallDialog, DecisionDialog, InterviewResultDialog, JoiningCallDialog, JoiningDialog, MissedDialog, NewDateDialog, RejectMissedDialog, ReviewLinkDialog, ScheduleDialog, ScreeningRejectDialog } from './PipelineDialogs';
 import { ProcessBar } from './ProcessBar';
 import { fromDraft, ProfileEditor, sameDraft, toDraft, type ProfileDraft } from './ProfileEditor';
@@ -201,6 +202,11 @@ function DetailsTab({ c }: { c: Candidate }) {
           />
           <PanelTable title="Primary interview panel" panel={c.primary_panel} />
           <PanelTable title="Final interview panel" panel={c.secondary_panel} />
+        </Section>
+      )}
+      {interviewReached(c, 'primary') && (
+        <Section title="Interview assessment forms">
+          <AssessmentsSection candidate={c} />
         </Section>
       )}
       {c.career_summary && <Section title="Summary"><p className="text-sm whitespace-pre-wrap">{c.career_summary}</p></Section>}

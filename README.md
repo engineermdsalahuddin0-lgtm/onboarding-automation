@@ -52,7 +52,30 @@ Forgotten passwords are reset from the same Supabase page.
 | Admin | Everything, including settings, team, the AI key, deleting records, unlocking a final decision and approving corrections |
 | HR | The whole hiring process; cannot delete candidates or change company settings |
 | Viewer | Read only |
+| Interviewer | Only **My interviews**: marks the candidates of the interviews they are put on |
 | Pending | Nothing, until an admin assigns a role |
+
+**Interview assessment.** The company's Interview Assessment Form, filled in on a phone or computer. Each interviewer gives
+only a mark from 1 to 5 for each of the 10 areas, optional strengths and weaknesses, a comment, Employ or Turn Down, and a
+signature; the candidate, position, unit, department, interviewer and date are filled in, and the obtained score (out of 50),
+average and percentage work themselves out. An area left empty counts as 0; a form left wholly empty is not counted.
+
+- **Interviewers**: an admin adds them under **Settings > Team > Add interviewer** (email and password; this needs
+  `SUPABASE_SERVICE_ROLE_KEY` on the server), or creates the user in Supabase and picks the Interviewer role. Each one saves
+  their details and signature once, and the signature goes on every form they mark.
+- **Who interviews whom**: on a CV bucket, the **Interview panel** button puts interviewers on its primary or final
+  interview. An interviewer sees only those candidates, from the day their interview is scheduled. Staff on a panel get
+  **My interviews** in the menu too.
+- **Guests**: the same dialog makes a link for a guest interviewer. It works on its day only; the guest writes their name and
+  designation, signs once and marks that day's candidates.
+- **HR as moderator**: on a candidate's card, **Interview assessment forms** lists each interviewer's form with the score,
+  Download and Print (a PDF laid out like the paper form), and the simple average of the filled forms. HR can enter the marks
+  of an interviewer who could not (the form then says so, and the signature stays empty unless HR adds it), and can add a
+  missing name or signature, but can never change marks an interviewer or guest entered. The interviewer can still change
+  their own marks at any time. Recording the interview result then starts from these forms (each score out of 10).
+
+After updating, run [supabase/schema.sql](supabase/schema.sql) again in the SQL Editor: it adds the interviewer role and the
+tables for panels, guest links and forms.
 
 Each person also has a **desk** under **Settings > Team**, which splits the work:
 

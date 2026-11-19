@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, Briefcase, Calendar, CalendarX, Check, ChevronDown, Copy, Download, ExternalLink, FileText, House, Link2, Mail, MapPin, MessageSquare, Pencil, Phone, PhoneCall, Search, Trash2, Upload, UserX, Users, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Briefcase, Calendar, CalendarX, Check, ChevronDown, ClipboardPen, Copy, Download, ExternalLink, FileText, House, Link2, Mail, MapPin, MessageSquare, Pencil, Phone, PhoneCall, Search, Trash2, Upload, UserX, Users, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { BucketFormDialog } from '../components/BucketForm';
@@ -6,6 +6,7 @@ import { DeleteBucketDialog } from '../components/DeleteBucketDialog';
 import { BulkUploadDialog } from '../components/BulkUpload';
 import { HelpTip } from '../components/Guide';
 import { HandoverDialog } from '../components/HandoverDialog';
+import { InterviewPanelDialog } from '../components/InterviewPanel';
 import { ConfirmCallsDialog, copyText, MissedDialog, NewDateDialog, ScheduleDialog, ScreeningRejectDialog } from '../components/PipelineDialogs';
 import { ProcessMini } from '../components/ProcessBar';
 import { ActionIcon, Avatar, Button, Confirm, EmptyState, errorText, HoverTooltip, PageHeader, RangeSlider, RecommendationStars, Select, SortHeader, StatusBadge, TH, THEAD, TooltipList, useToast } from '../components/ui';
@@ -31,7 +32,8 @@ type Modal =
   | { kind: 'handover'; candidates: Candidate[] }
   | { kind: 'upload' }
   | { kind: 'edit' }
-  | { kind: 'delete' };
+  | { kind: 'delete' }
+  | { kind: 'panel' };
 
 const STAGES: { value: StageFilter; label: string; help: string; action?: string }[] = [
   { value: 'all', label: 'All', help: 'Everyone in this bucket. Click a row to open the candidate\'s card and move them to the next step.' },
@@ -338,7 +340,7 @@ function CandidateRow({ c, index, photoUrl, selectable, selected, onToggle, onOp
 export function BucketDetailPage() {
   const { id } = useParams();
   const [params, setParams] = useSearchParams();
-  const { buckets, candidates, postings, requisitions, team, user, canWrite, canScreen, canProcess, isAdmin, updateCandidates } = useStore();
+  const { buckets, candidates, postings, requisitions, team, user, panels, canWrite, canScreen, canProcess, isAdmin, updateCandidates } = useStore();
   const toast = useToast();
 
   const bucket = buckets.find((b) => b.id === id);
@@ -469,6 +471,7 @@ export function BucketDetailPage() {
   }
 
   const applyLink = `${location.origin}/apply/${bucket.code}`;
+  const panelCount = new Set(panels.filter((p) => p.bucket_id === bucket.id).map((p) => p.interviewer_id)).size;
   const maxSource = stats.sources[0]?.count ?? 1;
   // Bulk actions follow the desks: screening for new CVs, the process team for the schedules.
   const canShortlist = canScreen ? selected.filter((c) => c.screening_status === 'new') : [];
@@ -493,6 +496,7 @@ export function BucketDetailPage() {
           <>
             {canWrite && <ActionIcon label="Edit bucket" icon={Pencil} onClick={() => setModal({ kind: 'edit' })} />}
             <ActionIcon data-tour="bucket-link" label="Copy application link" icon={Link2} onClick={() => void copyText(applyLink).then(() => toast('Application form link copied.'))} />
+            <ActionIcon label={`Interview panel${panelCount ? ` (${panelCount} interviewer${panelCount === 1 ? '' : 's'})` : ''}: who marks the primary and final interviews`} icon={ClipboardPen} onClick={() => setModal({ kind: 'panel' })} />
             <ActionIcon label="Download" icon={Download} disabled={visible.length === 0} onClick={() => void downloadXlsx(visible, EXPORT_COLUMNS, `${bucket.designation}-${todayIso()}.xlsx`, bucket.designation)} />
             {canWrite && (isAdmin || items.length === 0) && <ActionIcon label="Delete bucket" icon={Trash2} onClick={() => setModal({ kind: 'delete' })} />}
             {canScreen && <ActionIcon data-tour="bucket-upload" label="Upload CVs" icon={Upload} primary onClick={() => setModal({ kind: 'upload' })} />}
@@ -790,6 +794,7 @@ export function BucketDetailPage() {
       {modal?.kind === 'upload' && <BulkUploadDialog bucketId={bucket.id} onClose={() => setModal(null)} />}
       {modal?.kind === 'edit' && <BucketFormDialog bucket={bucket} onClose={() => setModal(null)} />}
       {modal?.kind === 'delete' && <DeleteBucketDialog bucket={bucket} onClose={() => setModal(null)} />}
+      {modal?.kind === 'panel' && <InterviewPanelDialog bucket={bucket} onClose={() => setModal(null)} />}
     </>
   );
 }

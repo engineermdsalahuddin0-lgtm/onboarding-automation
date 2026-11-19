@@ -16,7 +16,10 @@ export type TableName =
   | 'cv_review_sessions'
   | 'notifications'
   | 'questions'
-  | 'edit_requests';
+  | 'edit_requests'
+  | 'interview_panels'
+  | 'guest_links'
+  | 'interview_assessments';
 
 export interface ListOptions {
   /** Comma-separated column list. Omit for every column. */
@@ -39,7 +42,14 @@ export type RpcName =
   | 'request_edit'
   | 'decide_edit'
   | 'cancel_edit'
-  | 'apply_edit';
+  | 'apply_edit'
+  | 'my_interviews'
+  | 'save_my_details'
+  | 'save_my_assessment'
+  | 'get_guest_interview'
+  | 'save_guest_assessment'
+  | 'moderator_save_assessment'
+  | 'moderator_sign_assessment';
 
 /** Everything the app needs from a data store. Supabase in production, the browser in demo mode. */
 export interface Backend {
