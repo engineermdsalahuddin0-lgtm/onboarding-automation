@@ -121,12 +121,11 @@ export function BucketFormDialog({ onClose, bucket, fromRequisition, defaultDepa
         <div className="sm:col-span-2">
           <DateTimeField
             label="Primary interview on"
-            required={!bucket}
             date={form.primary_date}
             time={form.primary_time}
             onDate={(primary_date) => set({ primary_date })}
             onTime={(primary_time) => set({ primary_time })}
-            hint="Everyone who confirms on the call is scheduled for this day. A candidate who cannot come gets a new date of their own."
+            hint="Optional. Everyone who confirms on the call is scheduled for this day. A candidate who cannot come gets a new date of their own."
           />
           {waitingForOldSlot.length > 0 && form.primary_date && (
             canProcess ? (

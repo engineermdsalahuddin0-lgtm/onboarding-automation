@@ -43,7 +43,7 @@ export function NewRecruitmentDialog({ onClose, title = 'New recruitment' }: { o
       requisitionId = requisition.id;
       const bucket = await saveBucket({
         ...place, requisition_id: requisition.id, designation, company, color: 'green', status: 'Open', accepting_applications: true, description: '',
-        primary_date: interviewDate || null, primary_time: interviewTime,
+        primary_date: interviewDate || null, primary_time: interviewDate ? interviewTime : '',
       });
       toast(`${designation}: requisition ${requisition.ref_no} and its CV bucket are ready.`);
       onClose();
@@ -110,13 +110,12 @@ export function NewRecruitmentDialog({ onClose, title = 'New recruitment' }: { o
         <div className="sm:col-span-2">
           <DateTimeField
             label="Primary interview on"
-            required
             min={todayIso()}
             date={interviewDate}
             time={interviewTime}
             onDate={setInterviewDate}
             onTime={setInterviewTime}
-            hint="Everyone who confirms on the call is scheduled for this day. It can be changed later from the bucket."
+            hint="Optional. Everyone who confirms on the call is scheduled for this day. It can be added or changed later from the bucket."
           />
         </div>
       </form>
