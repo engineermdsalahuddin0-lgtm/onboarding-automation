@@ -677,7 +677,10 @@ async function main() {
   const row = () => page.getByRole('row', { name: /Rupa Akter/ });
   const card = page.getByRole('dialog', { name: 'Rupa Akter' });
   const button = (name) => card.getByRole('button', { name, exact: true });
+  // With no interviewer forms, scores are typed by hand after choosing to.
   const fillPanel = async (dialog, people) => {
+    const byHand = dialog.getByRole('button', { name: 'Type the scores by hand instead' });
+    if (await byHand.count()) await byHand.click();
     for (const [index, person] of people.entries()) {
       if (index > 0) await dialog.getByRole('button', { name: 'Add more' }).click();
       await dialog.getByLabel(new RegExp(`^Interviewer ${index + 1}\\b`)).fill(person.name);
@@ -769,7 +772,8 @@ async function main() {
   check('The feedback box is gone from scoring', await primary.getByLabel('Feedback').count() === 0);
   await primary.getByRole('button', { name: 'Save as selected' }).click();
   await page.waitForTimeout(200);
-  check('An interviewer and score are required', await primary.isVisible());
+  check('Saving needs at least one interviewer form or typed score', await primary.isVisible());
+  check("The dialog lists the panel's interviewers, to enter their marks from paper", await primary.getByRole('button', { name: 'Enter marks', exact: true }).count() === 1);
   await fillPanel(primary, [
     { name: 'Interviewer One', score: 8, recommended: true },
     { name: 'Interviewer Two', score: 7, recommended: false },

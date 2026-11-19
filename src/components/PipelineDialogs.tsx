@@ -1,6 +1,7 @@
 import { Copy, Download, Mail, MessageCircle, Plus, Smartphone, Star, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { assessmentsToPanel } from '../lib/assessment';
+import { AssessmentsSection } from './InterviewPanel';
 import { backend } from '../lib/backend';
 import { DOCUMENT_CHECKLIST } from '../lib/defaults';
 import { downloadCsv } from '../lib/export';
@@ -528,19 +529,29 @@ export function InterviewResultDialog({ candidate, stage, result, onClose }: { c
   // Rejecting at the final interview is the final decision, so its dates are taken here too.
   const locks = !isPrimary && result === 'rejected';
   const saved = isPrimary ? candidate.primary_panel : candidate.secondary_panel;
-  // With no panel saved yet, the interviewers' own forms fill it in: each score out of 10, and Employ as recommended.
-  const fromForms = saved.length === 0 ? assessmentsToPanel(assessments.filter((a) => a.candidate_id === candidate.id && a.stage === stage)) : [];
-  const [rows, setRows] = useState<PanelRow[]>(() => panelRows(fromForms.length > 0 ? fromForms : saved));
+  // The interviewers' own forms are the panel: each score out of 10 (marks out of 50 ÷ 5), and Employ as recommended.
+  // They update here as HR enters marks from paper forms.
+  const fromForms = assessmentsToPanel(assessments.filter((a) => a.candidate_id === candidate.id && a.stage === stage));
+  // Typing names and scores by hand is for results already typed that way (kept when a result is undone), or when asked for.
+  const [byHand, setByHand] = useState(() => fromForms.length === 0 && saved.length > 0);
+  const [rows, setRows] = useState<PanelRow[]>(() => panelRows(saved.length > 0 ? saved : fromForms));
   const [category, setCategory] = useState<SelectionCategory | ''>('');
   const [remarks, setRemarks] = useState(candidate.secondary_feedback ?? '');
   const [dates, setDates] = useState(() => initialRejectionDates());
   const [busy, setBusy] = useState(false);
-  const { average, recommended } = panelSummary(rows);
+  const { average, recommended } = byHand
+    ? panelSummary(rows)
+    : panelSummary(panelRows(fromForms).filter((row) => row.name || row.score));
+  const count = byHand ? rows.length : fromForms.length;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (!byHand && fromForms.length === 0) {
+      toast("Enter at least one interviewer's marks first (Enter marks), or type the scores by hand.", 'bad');
+      return;
+    }
     setBusy(true);
-    const panel = rowsToPanel(rows);
+    const panel = byHand ? rowsToPanel(rows) : fromForms;
     try {
       await updateCandidate(
         candidate.id,
@@ -569,12 +580,12 @@ export function InterviewResultDialog({ candidate, stage, result, onClose }: { c
     <Dialog
       title={`${isPrimary ? 'Primary' : 'Final'} interview: ${result === 'selected' ? 'select' : 'reject'} ${candidate.full_name}`}
       onClose={onClose}
-      width="max-w-2xl"
+      width="max-w-3xl"
       footer={
         <>
           <p className="mr-auto text-xs text-ink-soft" aria-live="polite">
-            {average !== null && <>Average <strong className="tabular">{average}</strong>/10</>}
-            {rows.length > 0 && <> · {recommended} of {rows.length} recommended</>}
+            {average !== null && <>Average <strong className="tabular">{average}</strong>/10 ({Math.round(average * 100) / 10}%)</>}
+            {count > 0 && <> · {recommended} of {count} recommended</>}
           </p>
           <Button onClick={onClose}>Cancel</Button>
           <Button type="submit" form="interview-form" variant={result === 'selected' ? 'primary' : 'danger'} loading={busy}>
@@ -583,15 +594,26 @@ export function InterviewResultDialog({ candidate, stage, result, onClose }: { c
         </>
       }
     >
-      <form id="interview-form" onSubmit={submit} className="space-y-3">
-        {fromForms.length > 0 && (
+      {!byHand && (
+        // Outside the form below: the forms open dialogs with forms of their own.
+        <div className="mb-3 space-y-2">
           <p className="rounded-lg bg-brand-50 px-3 py-2 text-xs text-brand-900">
-            Filled in from {fromForms.length} interviewer form{fromForms.length === 1 ? '' : 's'}: each score is the form's marks out of 50, shown out of 10, and Employ counts as recommended.
+            The score comes from each interviewer's assessment form: marks out of 50, shown here out of 10, and Employ counts as recommended.
+            For an interviewer who marked on paper, press <strong>Enter marks</strong>.
           </p>
+          <AssessmentsSection candidate={candidate} only={stage} />
+          <button type="button" className="text-xs text-ink-soft underline" onClick={() => setByHand(true)}>Type the scores by hand instead</button>
+        </div>
+      )}
+      <form id="interview-form" onSubmit={submit} className="space-y-3">
+        {byHand && (
+          <>
+            <PanelEditor rows={rows} onChange={setRows} />
+            <button type="button" className="text-xs text-ink-soft underline" onClick={() => setByHand(false)}>Use the interviewers' assessment forms instead</button>
+          </>
         )}
-        <PanelEditor rows={rows} onChange={setRows} />
         {asksForList && (
-          <div className="border-t border-line pt-3">
+          <div className={classNames(byHand && 'border-t border-line pt-3')}>
             <Select
               label="Selection list"
               required

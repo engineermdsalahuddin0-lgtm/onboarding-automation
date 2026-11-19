@@ -778,6 +778,16 @@ export interface BucketStats {
   /** CVs with review time recorded: each CV is reviewed once, however many sittings it took. */
   reviewedCvs: number;
   sources: { source: string; count: number }[];
+  /** The days candidates are scheduled for the primary and the final interview, earliest first. */
+  primaryDays: string[];
+  finalDays: string[];
+}
+
+/** The interview day to show for a bucket: the next one from today, else the latest; and how many other days there are. */
+export function interviewDay(days: string[], today: string): { day: string; more: number } | null {
+  if (days.length === 0) return null;
+  const day = days.find((d) => d >= today) ?? days[days.length - 1];
+  return { day, more: days.length - 1 };
 }
 
 export function bucketStats(items: Candidate[]): BucketStats {
@@ -793,9 +803,15 @@ export function bucketStats(items: Candidate[]): BucketStats {
     reviewSeconds: 0,
     reviewedCvs: 0,
     sources: [],
+    primaryDays: [],
+    finalDays: [],
   };
   const sources = new Map<string, number>();
+  const primaryDays = new Set<string>();
+  const finalDays = new Set<string>();
   for (const c of items) {
+    if (c.message_status === 'message_done' && c.primary_date) primaryDays.add(c.primary_date);
+    if (c.secondary_status !== 'pending' && c.secondary_date) finalDays.add(c.secondary_date);
     if (c.screening_status === 'shortlisted') stats.shortlisted += 1;
     if (c.call_status !== 'pending') stats.called += 1;
     if (c.secondary_status === 'selected') stats.secondarySelected += 1;
@@ -810,6 +826,8 @@ export function bucketStats(items: Candidate[]): BucketStats {
   stats.sources = [...sources.entries()]
     .map(([source, count]) => ({ source, count }))
     .sort((a, b) => b.count - a.count);
+  stats.primaryDays = [...primaryDays].sort();
+  stats.finalDays = [...finalDays].sort();
   return stats;
 }
 

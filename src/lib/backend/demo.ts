@@ -403,12 +403,20 @@ export function createDemoBackend(): Backend {
   const viewOf = (stage: InterviewStage, c: Row) => (stage === 'primary'
     ? { date: c.primary_date ?? null, time: c.primary_time ?? '', status: c.primary_status, attendance: c.primary_attendance ?? '' }
     : { date: c.secondary_date ?? null, time: c.secondary_time ?? '', status: c.secondary_status, attendance: c.secondary_attendance ?? '' });
+  // What interview_candidates in schema.sql hands an interviewer: the profile, never contact details or IDs.
+  const PROFILE_KEYS = [
+    'photo_path', 'cv_path', 'cv_file_name', 'gender', 'date_of_birth', 'address', 'current_company', 'industry', 'total_experience_years',
+    'present_salary', 'expected_salary', 'notice_period', 'career_summary', 'education', 'experience', 'training', 'skills', 'languages', 'linkedin',
+  ];
   const scheduled = (stage: InterviewStage, c: Row) => (stage === 'primary' ? c.message_status === 'message_done' : c.secondary_status !== 'pending');
 
   function interviewCandidates(bucketId: string, stage: InterviewStage, day: string | null = null): InterviewCandidate[] {
     return table('candidates')
       .filter((c) => c.bucket_id === bucketId && scheduled(stage, c))
-      .map((c) => ({ id: c.id, bucket_id: c.bucket_id, full_name: c.full_name, current_designation: c.current_designation ?? '', ...viewOf(stage, c) }))
+      .map((c) => ({
+        id: c.id, bucket_id: c.bucket_id, full_name: c.full_name, current_designation: c.current_designation ?? '', ...viewOf(stage, c),
+        ...Object.fromEntries(PROFILE_KEYS.map((key) => [key, c[key] ?? null])),
+      }) as InterviewCandidate)
       .filter((c) => day === null || c.date === null || c.date === day)
       .sort((a, b) => (a.date ?? '9999').localeCompare(b.date ?? '9999') || a.time.localeCompare(b.time) || a.full_name.localeCompare(b.full_name));
   }
@@ -902,7 +910,8 @@ export function createDemoBackend(): Backend {
             .sort((a, b) => b.bucket.created_at.localeCompare(a.bucket.created_at) || String(a.panel.stage).localeCompare(b.panel.stage))
             .map(({ panel, bucket }) => ({
               bucket_id: bucket.id, stage: panel.stage, designation: bucket.designation, department: bucket.department, section: bucket.section,
-              subsection: bucket.subsection, unit: bucket.unit, company: bucket.company, candidates: interviewCandidates(bucket.id, panel.stage),
+              subsection: bucket.subsection, unit: bucket.unit, company: bucket.company, color: bucket.color, primary_date: bucket.primary_date,
+              primary_time: bucket.primary_time, created_at: bucket.created_at, candidates: interviewCandidates(bucket.id, panel.stage),
             }));
           return structuredClone({
             profile: { id: me.id, full_name: me.full_name ?? '', email: me.email ?? '', job_title: me.job_title, department: me.department ?? '', signature: me.signature ?? '' },

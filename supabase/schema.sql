@@ -1820,16 +1820,26 @@ begin
 end;
 $$;
 
--- The candidates of one bucket's primary or final interview, with only what the form needs. With a day,
--- only those interviewed that day (and any without a day set).
+-- The candidates of one bucket's primary or final interview, with the profile an interviewer reads before
+-- marking: photo, CV, education, experience, salary. Never contact details or ID numbers. With a day, only
+-- those interviewed that day (and any without a day set).
 create or replace function public.interview_candidates(p_bucket uuid, p_stage text, p_day date default null)
 returns jsonb language sql stable security definer set search_path = '' as $$
   select coalesce(jsonb_agg(jsonb_build_object(
       'id', x.id, 'bucket_id', x.bucket_id, 'full_name', x.full_name, 'current_designation', x.current_designation,
-      'date', x.day, 'time', x.at, 'status', x.status, 'attendance', x.attendance
+      'date', x.day, 'time', x.at, 'status', x.status, 'attendance', x.attendance,
+      'photo_path', x.photo_path, 'cv_path', x.cv_path, 'cv_file_name', x.cv_file_name,
+      'gender', x.gender, 'date_of_birth', x.date_of_birth, 'address', x.address,
+      'current_company', x.current_company, 'industry', x.industry, 'total_experience_years', x.total_experience_years,
+      'present_salary', x.present_salary, 'expected_salary', x.expected_salary, 'notice_period', x.notice_period,
+      'career_summary', x.career_summary, 'education', x.education, 'experience', x.experience, 'training', x.training,
+      'skills', to_jsonb(x.skills), 'languages', to_jsonb(x.languages), 'linkedin', x.linkedin
     ) order by x.day nulls last, x.at, x.full_name), '[]')
   from (
     select c.id, c.bucket_id, c.full_name, c.current_designation,
+      c.photo_path, c.cv_path, c.cv_file_name, c.gender, c.date_of_birth, c.address, c.current_company, c.industry,
+      c.total_experience_years, c.present_salary, c.expected_salary, c.notice_period, c.career_summary,
+      c.education, c.experience, c.training, c.skills, c.languages, c.linkedin,
       case when p_stage = 'primary' then c.primary_date else c.secondary_date end as day,
       case when p_stage = 'primary' then c.primary_time else c.secondary_time end as at,
       case when p_stage = 'primary' then c.primary_status else c.secondary_status end as status,
@@ -1880,6 +1890,7 @@ begin
       select jsonb_agg(jsonb_build_object(
         'bucket_id', b.id, 'stage', p.stage, 'designation', b.designation, 'department', b.department,
         'section', b.section, 'subsection', b.subsection, 'unit', b.unit, 'company', b.company,
+        'color', b.color, 'primary_date', b.primary_date, 'primary_time', b.primary_time, 'created_at', b.created_at,
         'candidates', public.interview_candidates(b.id, p.stage)
       ) order by b.created_at desc, p.stage)
       from public.interview_panels p join public.cv_buckets b on b.id = p.bucket_id
@@ -2147,6 +2158,21 @@ begin
   return to_jsonb(saved);
 end;
 $$;
+
+-- An interviewer may open the photo and CV of a candidate whose interview they sit on, once it is scheduled.
+create or replace function public.interviewer_can_read_file(p_name text)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select auth.uid() is not null and exists (
+    select 1 from public.candidates c
+    join public.interview_panels p on p.bucket_id = c.bucket_id and p.interviewer_id = auth.uid()
+    where (c.cv_path = p_name or c.photo_path = p_name)
+      and case when p.stage = 'primary' then c.message_status = 'message_done' else c.secondary_status <> 'pending' end
+  )
+$$;
+
+drop policy if exists candidate_files_interviewer_read on storage.objects;
+create policy candidate_files_interviewer_read on storage.objects for select to authenticated
+  using (bucket_id = 'candidate-files' and public.interviewer_can_read_file(name));
 
 alter table public.interview_panels enable row level security;
 alter table public.guest_links enable row level security;

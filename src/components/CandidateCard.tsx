@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   CircleHelp,
   ClipboardList,
+  ClipboardPen,
   Download,
   ExternalLink,
   Eye,
@@ -28,6 +29,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { isFilled } from '../lib/assessment';
 import { backend } from '../lib/backend';
 import { classNames, dateMedium, dateTime, duration, money, whenText } from '../lib/format';
 import { attendanceOf, canGiveNewDate, CATEGORY_LABELS, correctableSteps, EDIT_STEP_LABELS, isLocked, JOINING, openReviewStage, reschedulesOf, scheduledRound, setCategory, shortlist, stageOf, stepBack, unlockDecision } from '../lib/pipeline';
@@ -38,7 +40,7 @@ import { HelpTip, useGuide } from './Guide';
 import type { Candidate, CandidateEvent, CvReviewSession, EditStep, InterviewerScore, MessageLogEntry } from '../types';
 import { CorrectionsStrip, RequestCorrectionDialog } from './Corrections';
 import { HandoverDialog } from './HandoverDialog';
-import { AssessmentsSection, interviewReached } from './InterviewPanel';
+import { AssessmentsSection, InterviewMarksDialog, interviewReached } from './InterviewPanel';
 import { CallDialog, DecisionDialog, InterviewResultDialog, JoiningCallDialog, JoiningDialog, MissedDialog, NewDateDialog, RejectMissedDialog, ReviewLinkDialog, ScheduleDialog, ScreeningRejectDialog } from './PipelineDialogs';
 import { ProcessBar } from './ProcessBar';
 import { fromDraft, ProfileEditor, sameDraft, toDraft, type ProfileDraft } from './ProfileEditor';
@@ -415,6 +417,7 @@ type StepModal =
   | { kind: 'result'; stage: 'primary' | 'secondary'; result: 'selected' | 'rejected' }
   | { kind: 'decision'; decision: 'confirmed' | 'rejected' }
   | { kind: 'review'; stage: 'primary' | 'secondary' }
+  | { kind: 'marks'; stage: 'primary' | 'secondary' }
   | { kind: 'joining' }
   | { kind: 'joiningCall' }
   | { kind: 'unlock' }
@@ -434,7 +437,7 @@ const PANEL: Record<PanelTone, string> = {
 
 /** What this step asks of HR: one panel, only the choices that make sense right now. */
 function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void }) {
-  const { canWrite, canScreen, canProcess, isAdmin, team, user, buckets, updateCandidate } = useStore();
+  const { canWrite, canScreen, canProcess, isAdmin, team, user, buckets, assessments, updateCandidate } = useStore();
   const toast = useToast();
   const navigate = useNavigate();
   // Undoing a step is for whoever does that step: the screening desk for the CV review, the process team after it.
@@ -672,6 +675,11 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
     (c.message_status === 'message_done' && (c.primary_status === 'pending' || c.primary_status === 'scheduled')) ||
     (c.primary_status === 'selected' && (c.secondary_status === 'pending' || c.secondary_status === 'scheduled')));
   const designation = buckets.find((b) => b.id === c.bucket_id)?.designation ?? '';
+  // The interview being held now, whose assessment forms HR may need to fill in from paper.
+  const marksStage = c.final_decision !== null ? null
+    : interviewReached(c, 'secondary') ? 'secondary' as const
+    : interviewReached(c, 'primary') && c.primary_status !== 'rejected' ? 'primary' as const : null;
+  const marked = marksStage ? assessments.filter((a) => a.candidate_id === c.id && a.stage === marksStage && isFilled(a)).length : 0;
   // A step recorded wrongly is corrected after an admin approves; the process team asks, for the steps it records.
   const correctable = canProcess && correctableSteps(c).length > 0;
 
@@ -686,8 +694,13 @@ function NextStep({ c, open }: { c: Candidate; open: (modal: StepModal) => void 
         </div>
         {showActions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
       </div>
-      {canWrite && (previous || feedbackStage || interviewing || correctable || (isLocked(c) && isAdmin)) && (
+      {canWrite && (previous || feedbackStage || interviewing || marksStage || correctable || (isLocked(c) && isAdmin)) && (
         <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-black/5 pt-1.5">
+          {marksStage && (
+            <Button size="sm" variant="ghost" icon={ClipboardPen} onClick={() => open({ kind: 'marks', stage: marksStage })}>
+              {marksStage === 'primary' ? 'Primary' : 'Final'} interview marks{marked > 0 ? ` (${marked} form${marked === 1 ? '' : 's'})` : ''}
+            </Button>
+          )}
           {interviewing && (
             <Button size="sm" variant="ghost" icon={FileQuestion} onClick={() => navigate(`/questions?kind=interview&designation=${encodeURIComponent(designation)}`)}>
               Interview questions
@@ -925,6 +938,7 @@ export function CandidateCard({ candidateId, onClose }: { candidateId: string; o
       {modal?.kind === 'result' && <InterviewResultDialog candidate={c} stage={modal.stage} result={modal.result} onClose={closeModal} />}
       {modal?.kind === 'decision' && <DecisionDialog candidate={c} decision={modal.decision} onClose={closeModal} />}
       {modal?.kind === 'review' && <ReviewLinkDialog candidate={c} stage={modal.stage} onClose={closeModal} />}
+      {modal?.kind === 'marks' && <InterviewMarksDialog candidate={c} stage={modal.stage} onClose={closeModal} />}
       {modal?.kind === 'joining' && <JoiningDialog candidate={c} onClose={closeModal} />}
       {modal?.kind === 'joiningCall' && <JoiningCallDialog candidate={c} onClose={closeModal} />}
       {modal?.kind === 'requestCorrection' && <RequestCorrectionDialog candidate={c} onClose={closeModal} />}

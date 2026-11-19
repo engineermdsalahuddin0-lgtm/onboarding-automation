@@ -579,16 +579,22 @@ export interface InterviewAssessment extends AssessmentInput {
   updated_at: string;
 }
 
-/** A candidate as an interviewer sees them: only what the form needs. */
-export interface InterviewCandidate {
+/** A candidate as an interviewer sees them: the profile to read before marking, never contact details or IDs. */
+export interface InterviewCandidate extends Pick<
+  CandidateProfileFields,
+  | 'full_name' | 'current_designation' | 'gender' | 'date_of_birth' | 'address' | 'current_company' | 'industry'
+  | 'total_experience_years' | 'present_salary' | 'expected_salary' | 'notice_period' | 'career_summary'
+  | 'education' | 'experience' | 'training' | 'skills' | 'languages' | 'linkedin'
+> {
   id: string;
   bucket_id: string;
-  full_name: string;
-  current_designation: string;
   date: string | null;
   time: string;
   status: InterviewStatus;
   attendance: Attendance;
+  photo_path: string | null;
+  cv_path: string | null;
+  cv_file_name: string;
 }
 
 /** Where the position sits, printed at the top of the form. */
@@ -604,6 +610,10 @@ export interface InterviewPosition {
 export interface InterviewAssignment extends InterviewPosition {
   bucket_id: string;
   stage: InterviewStage;
+  color: string;
+  primary_date: string | null;
+  primary_time: string;
+  created_at: string;
   candidates: InterviewCandidate[];
 }
 

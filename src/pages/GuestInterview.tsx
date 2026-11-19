@@ -1,13 +1,14 @@
-import { CalendarDays, ClipboardPen, Pencil } from 'lucide-react';
+import { CalendarDays, Pencil } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useParams } from 'react-router-dom';
 import tabLogo from '../assets/images/bitopi_group_logo_for_tab.jpg';
 import { AssessmentForm } from '../components/AssessmentForm';
+import { CandidateProfileDialog, InterviewCandidateCard } from '../components/InterviewCandidates';
 import { SignaturePad } from '../components/SignaturePad';
-import { Button, Card, Dialog, EmptyState, errorText, Spinner, StatusBadge, TextInput, useToast } from '../components/ui';
+import { Button, Card, Dialog, EmptyState, errorText, Spinner, TextInput, useToast } from '../components/ui';
 import { isFilled, scoreOf, STAGE_LABEL } from '../lib/assessment';
 import { backend } from '../lib/backend';
-import { dateDmy, time12 } from '../lib/format';
+import { dateDmy } from '../lib/format';
 import type { AssessmentInput, GuestInterview, InterviewCandidate } from '../types';
 import { FormStatus, inputOf } from './MyInterviews';
 
@@ -37,6 +38,7 @@ export function GuestInterviewPage() {
   const [error, setError] = useState('');
   const [editingGuest, setEditingGuest] = useState(false);
   const [open, setOpen] = useState<InterviewCandidate | null>(null);
+  const [viewing, setViewing] = useState<InterviewCandidate | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -80,30 +82,27 @@ export function GuestInterviewPage() {
           </span>
           <Button size="sm" icon={Pencil} onClick={() => setEditingGuest(true)}>Change</Button>
         </div>
-        <Card title="Candidates">
-          {data.candidates.length === 0 ? (
-            <p className="text-sm text-ink-muted">No candidate is scheduled for this interview today.</p>
-          ) : (
-            <ul className="divide-y divide-line">
-              {data.candidates.map((candidate) => {
-                const form = mine.get(candidate.id);
-                return (
-                  <li key={candidate.id} className="flex flex-wrap items-center gap-3 py-2.5">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{candidate.full_name}</p>
-                      <p className="text-xs text-ink-muted">{candidate.time ? time12(candidate.time) : ''}{candidate.current_designation ? ` · ${candidate.current_designation}` : ''}</p>
-                    </div>
-                    {candidate.attendance && <StatusBadge tone="warning">Did not attend</StatusBadge>}
-                    <FormStatus form={form} />
-                    <Button size="sm" variant={form && isFilled(form) ? 'secondary' : 'primary'} icon={ClipboardPen} onClick={() => setOpen(candidate)}>
-                      {form && isFilled(form) ? 'Edit marks' : 'Give marks'}
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Card>
+        {data.candidates.length === 0 ? (
+          <EmptyState icon={CalendarDays} title="No candidate today">No candidate is scheduled for this interview today.</EmptyState>
+        ) : (
+          <ul className="space-y-3">
+            {data.candidates.map((candidate, index) => {
+              const form = mine.get(candidate.id);
+              return (
+                <InterviewCandidateCard
+                  key={candidate.id}
+                  candidate={candidate}
+                  index={index}
+                  photoUrl={null}
+                  status={<FormStatus form={form} />}
+                  marked={Boolean(form && isFilled(form))}
+                  onMark={() => setOpen(candidate)}
+                  onProfile={() => setViewing(candidate)}
+                />
+              );
+            })}
+          </ul>
+        )}
       </div>
     );
   }
@@ -117,7 +116,20 @@ export function GuestInterviewPage() {
           {data && <p className="truncate text-xs text-ink-muted">{data.designation} · {STAGE_LABEL[data.stage]} · {dateDmy(data.valid_on)}</p>}
         </div>
       </header>
-      <main className="mx-auto w-full max-w-3xl px-4 py-5">{body}</main>
+      <main className="mx-auto w-full max-w-6xl px-4 py-5">{body}</main>
+      {viewing && data && (
+        <CandidateProfileDialog
+          candidate={viewing}
+          photoUrl={null}
+          canOpenFiles={false}
+          marked={Boolean(mine.get(viewing.id) && isFilled(mine.get(viewing.id)!))}
+          onMark={() => {
+            setOpen(viewing);
+            setViewing(null);
+          }}
+          onClose={() => setViewing(null)}
+        />
+      )}
       {open && data && guest && (
         <GuestMarkDialog
           token={token}

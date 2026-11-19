@@ -1,24 +1,35 @@
-import { CalendarDays, CheckCircle2, ClipboardPen, LogOut, RefreshCw, UserRound } from 'lucide-react';
+import { ArrowLeft, CalendarDays, CheckCircle2, LogOut, RefreshCw, UserRound } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import tabLogo from '../assets/images/bitopi_group_logo_for_tab.jpg';
 import { AssessmentForm, type FormHeader } from '../components/AssessmentForm';
+import { CandidateProfileDialog, InterviewCandidateCard, InterviewFolder } from '../components/InterviewCandidates';
 import { SignaturePad } from '../components/SignaturePad';
-import { Avatar, Button, Card, Dialog, EmptyState, errorText, IconButton, Spinner, StatusBadge, Tabs, TextInput, useToast } from '../components/ui';
+import { Avatar, Button, Dialog, EmptyState, errorText, IconButton, Spinner, StatusBadge, Tabs, TextInput, useToast } from '../components/ui';
 import { isFilled, RECOMMENDATION_LABEL, scoreOf, STAGE_LABEL, todayBd } from '../lib/assessment';
 import { backend } from '../lib/backend';
-import { classNames, dateDmy, time12 } from '../lib/format';
+import { useFileUrls } from '../lib/store';
+import { classNames } from '../lib/format';
 import type { AssessmentInput, InterviewAssessment, InterviewAssignment, InterviewCandidate, InterviewerDetails, MyInterviews } from '../types';
 
 type When = 'today' | 'upcoming' | 'earlier' | 'all';
 
-const ATTENDANCE_TEXT: Record<string, string> = { cant_attend: "Can't attend", absent: 'Absent', not_interested: 'Not interested' };
+const inWhen = (when: When, date: string | null, today: string) => when === 'all'
+  || (when === 'today' && date === today)
+  || (when === 'upcoming' && (date === null || date > today))
+  || (when === 'earlier' && date !== null && date < today);
 
-/** The interviews this person sits on, and their own forms. For interviewer accounts it is the whole app. */
+/**
+ * The interviews this person sits on: first their positions as folders, then inside one, its candidates as
+ * cards with photo and profile, each marked with Give marks. For interviewer accounts it is the whole app.
+ */
 export function MyInterviewsPage({ standalone = false }: { standalone?: boolean }) {
   const [data, setData] = useState<MyInterviews | null>(null);
   const [error, setError] = useState('');
-  const [when, setWhen] = useState<When>('today');
-  const [open, setOpen] = useState<{ assignment: InterviewAssignment; candidate: InterviewCandidate } | null>(null);
+  const [params, setParams] = useSearchParams();
+  const [when, setWhen] = useState<When>('all');
+  const [marking, setMarking] = useState<InterviewCandidate | null>(null);
+  const [viewing, setViewing] = useState<InterviewCandidate | null>(null);
   const [editingProfile, setEditingProfile] = useState(false);
 
   const load = useCallback(async () => {
@@ -40,98 +51,129 @@ export function MyInterviewsPage({ standalone = false }: { standalone?: boolean 
 
   const today = todayBd();
   const mine = useMemo(() => new Map((data?.assessments ?? []).map((a) => [`${a.candidate_id}:${a.stage}`, a])), [data]);
-  const shown = useMemo(() => (data?.assignments ?? [])
-    .map((assignment) => ({
-      assignment,
-      candidates: assignment.candidates.filter((c) => when === 'all'
-        || (when === 'today' && c.date === today)
-        || (when === 'upcoming' && (c.date === null || c.date > today))
-        || (when === 'earlier' && c.date !== null && c.date < today)),
-    }))
-    .filter((group) => group.candidates.length > 0), [data, when, today]);
-  const count = (w: When) => (data?.assignments ?? []).reduce((sum, a) => sum + a.candidates.filter((c) => w === 'all'
-    || (w === 'today' && c.date === today) || (w === 'upcoming' && (c.date === null || c.date > today)) || (w === 'earlier' && c.date !== null && c.date < today)).length, 0);
+  // The folder that is open lives in the link, so Back returns to the folders.
+  const assignment = data?.assignments.find((a) => a.bucket_id === params.get('bucket') && a.stage === params.get('stage')) ?? null;
+  const openFolder = (a: InterviewAssignment | null) => {
+    setParams((current) => {
+      if (a) {
+        current.set('bucket', a.bucket_id);
+        current.set('stage', a.stage);
+      } else {
+        current.delete('bucket');
+        current.delete('stage');
+      }
+      return current;
+    });
+    if (a) setWhen(a.candidates.some((c) => c.date === today) ? 'today' : 'all');
+  };
+  const candidates = assignment?.candidates.filter((c) => inWhen(when, c.date, today)) ?? [];
+  const photoUrls = useFileUrls(assignment?.candidates.map((c) => c.photo_path) ?? []);
+  // Folders with an interview today first, then upcoming, then the rest.
+  const folders = useMemo(() => [...(data?.assignments ?? [])].sort((a, b) => {
+    const rank = (x: InterviewAssignment) => (x.candidates.some((c) => c.date === today) ? 0 : x.candidates.some((c) => c.date === null || c.date > today) ? 1 : 2);
+    return rank(a) - rank(b);
+  }), [data, today]);
 
-  const body = !data ? (
-    error ? <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">{error}</p> : <Spinner label="Loading your interviews" />
-  ) : (
-    <div className="space-y-4">
-      {!data.profile.signature && (
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-          <span className="flex-1">Save your signature once and it is added to every form you mark.</span>
-          <Button size="sm" onClick={() => setEditingProfile(true)}>Add my signature</Button>
+  let body;
+  if (!data) {
+    body = error ? <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">{error}</p> : <Spinner label="Loading your interviews" />;
+  } else if (!assignment) {
+    body = (
+      <div className="space-y-4">
+        {!data.profile.signature && (
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            <span className="flex-1">Save your signature once and it is added to every form you mark.</span>
+            <Button size="sm" onClick={() => setEditingProfile(true)}>Add my signature</Button>
+          </div>
+        )}
+        {folders.length === 0 ? (
+          <EmptyState icon={CalendarDays} title="You are not on any interview panel yet">
+            HR adds you to a position's primary or final interview. It shows here as soon as they do.
+          </EmptyState>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {folders.map((a) => (
+              <InterviewFolder key={`${a.bucket_id}:${a.stage}`} assignment={a} forms={data.assessments} onOpen={() => openFolder(a)} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  } else {
+    const count = (w: When) => assignment.candidates.filter((c) => inWhen(w, c.date, today)).length;
+    body = (
+      <div className="space-y-4">
+        <div>
+          <button type="button" onClick={() => openFolder(null)} className="mb-1 inline-flex items-center gap-1 text-xs text-ink-soft hover:text-ink">
+            <ArrowLeft className="size-3.5" aria-hidden /> All my interviews
+          </button>
+          <h2 className="text-lg font-semibold">{assignment.designation} · {STAGE_LABEL[assignment.stage]}</h2>
+          <p className="text-sm text-ink-soft">{[assignment.unit, assignment.department, assignment.section, assignment.subsection].filter(Boolean).join(' › ')}</p>
         </div>
-      )}
-      <Tabs<When>
-        label="Which interviews"
-        value={when}
-        onChange={setWhen}
-        items={[
-          { value: 'today', label: 'Today', count: count('today') },
-          { value: 'upcoming', label: 'Upcoming', count: count('upcoming') },
-          { value: 'earlier', label: 'Earlier', count: count('earlier') },
-          { value: 'all', label: 'All', count: count('all') },
-        ]}
-      />
-      {data.assignments.length === 0 ? (
-        <EmptyState icon={CalendarDays} title="You are not on any interview panel yet">
-          HR adds you to a position's primary or final interview. It shows here as soon as they do.
-        </EmptyState>
-      ) : shown.length === 0 ? (
-        <EmptyState icon={CalendarDays} title={when === 'today' ? 'No interviews today' : 'Nothing here'}>
-          {when === 'today' ? 'Look under Upcoming or Earlier for your other interviews.' : 'Try another tab.'}
-        </EmptyState>
-      ) : (
-        shown.map(({ assignment, candidates }) => (
-          <Card key={`${assignment.bucket_id}:${assignment.stage}`} title={`${assignment.designation} · ${STAGE_LABEL[assignment.stage]}`}>
-            <p className="-mt-1 mb-3 text-xs text-ink-muted">{[assignment.unit, assignment.department, assignment.section].filter(Boolean).join(' · ')}</p>
-            <ul className="divide-y divide-line">
-              {candidates.map((candidate) => {
-                const form = mine.get(`${candidate.id}:${assignment.stage}`);
-                return (
-                  <li key={candidate.id} className="flex flex-wrap items-center gap-3 py-2.5">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{candidate.full_name}</p>
-                      <p className="text-xs text-ink-muted">
-                        {candidate.date ? dateDmy(candidate.date) : 'Day not set'}{candidate.time ? `, ${time12(candidate.time)}` : ''}
-                        {candidate.current_designation ? ` · ${candidate.current_designation}` : ''}
-                      </p>
-                    </div>
-                    {candidate.attendance && <StatusBadge tone="warning">{ATTENDANCE_TEXT[candidate.attendance] ?? candidate.attendance}</StatusBadge>}
-                    <FormStatus form={form} />
-                    <Button
-                      size="sm"
-                      variant={form && isFilled(form) ? 'secondary' : 'primary'}
-                      icon={ClipboardPen}
-                      onClick={() => setOpen({ assignment, candidate })}
-                    >
-                      {form && isFilled(form) ? 'Edit marks' : 'Give marks'}
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          </Card>
-        ))
-      )}
-    </div>
-  );
+        <Tabs<When>
+          label="Which candidates"
+          value={when}
+          onChange={setWhen}
+          items={[
+            { value: 'today', label: 'Today', count: count('today') },
+            { value: 'upcoming', label: 'Upcoming', count: count('upcoming') },
+            { value: 'earlier', label: 'Earlier', count: count('earlier') },
+            { value: 'all', label: 'All', count: count('all') },
+          ]}
+        />
+        {candidates.length === 0 ? (
+          <EmptyState icon={CalendarDays} title={when === 'today' ? 'No interview today' : 'No candidate here'}>Try another tab.</EmptyState>
+        ) : (
+          <ul className="space-y-3">
+            {candidates.map((candidate, index) => {
+              const form = mine.get(`${candidate.id}:${assignment.stage}`);
+              return (
+                <InterviewCandidateCard
+                  key={candidate.id}
+                  candidate={candidate}
+                  index={index}
+                  photoUrl={candidate.photo_path ? photoUrls[candidate.photo_path] ?? null : null}
+                  status={<FormStatus form={form} />}
+                  marked={Boolean(form && isFilled(form))}
+                  onMark={() => setMarking(candidate)}
+                  onProfile={() => setViewing(candidate)}
+                />
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    );
+  }
 
-  const dialogs = data && (
+  const dialogs = data && assignment && (
     <>
-      {open && (
+      {viewing && (
+        <CandidateProfileDialog
+          candidate={viewing}
+          photoUrl={viewing.photo_path ? photoUrls[viewing.photo_path] ?? null : null}
+          canOpenFiles
+          marked={Boolean(mine.get(`${viewing.id}:${assignment.stage}`) && isFilled(mine.get(`${viewing.id}:${assignment.stage}`)!))}
+          onMark={() => {
+            setMarking(viewing);
+            setViewing(null);
+          }}
+          onClose={() => setViewing(null)}
+        />
+      )}
+      {marking && (
         <MarkDialog
           profile={data.profile}
-          assignment={open.assignment}
-          candidate={open.candidate}
-          existing={mine.get(`${open.candidate.id}:${open.assignment.stage}`)}
-          onClose={() => setOpen(null)}
+          assignment={assignment}
+          candidate={marking}
+          existing={mine.get(`${marking.id}:${assignment.stage}`)}
+          onClose={() => setMarking(null)}
           onSaved={() => void load()}
         />
       )}
-      {editingProfile && <ProfileDialog profile={data.profile} onClose={() => setEditingProfile(false)} onSaved={() => void load()} />}
     </>
   );
+  const profileDialog = data && editingProfile && <ProfileDialog profile={data.profile} onClose={() => setEditingProfile(false)} onSaved={() => void load()} />;
 
   if (!standalone) {
     return (
@@ -148,6 +190,7 @@ export function MyInterviewsPage({ standalone = false }: { standalone?: boolean 
         </div>
         {body}
         {dialogs}
+        {profileDialog}
       </>
     );
   }
@@ -168,8 +211,9 @@ export function MyInterviewsPage({ standalone = false }: { standalone?: boolean 
         <IconButton label="Refresh" icon={RefreshCw} onClick={() => void load()} />
         <IconButton label="Sign out" icon={LogOut} onClick={() => void backend.signOut()} />
       </header>
-      <main className="mx-auto w-full max-w-3xl px-4 py-5">{body}</main>
+      <main className="mx-auto w-full max-w-6xl px-4 py-5">{body}</main>
       {dialogs}
+      {profileDialog}
     </div>
   );
 }

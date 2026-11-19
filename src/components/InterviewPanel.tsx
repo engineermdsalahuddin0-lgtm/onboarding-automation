@@ -197,8 +197,23 @@ type Editing =
   | { kind: 'view'; assessment: InterviewAssessment }
   | { kind: 'delete'; assessment: InterviewAssessment };
 
-export function AssessmentsSection({ candidate }: { candidate: Candidate }) {
-  const stages = STAGES.filter((stage) => interviewReached(candidate, stage));
+/** The forms of one interview in a dialog of their own: where HR enters marks from paper forms. */
+export function InterviewMarksDialog({ candidate, stage, onClose }: { candidate: Candidate; stage: InterviewStage; onClose: () => void }) {
+  return (
+    <Dialog
+      title={`${STAGE_LABEL[stage]} marks: ${candidate.full_name}`}
+      description="Each interviewer's form. For an interviewer who marked on paper, press Enter marks and copy their marks in."
+      onClose={onClose}
+      width="max-w-3xl"
+      footer={<Button onClick={onClose}>Done</Button>}
+    >
+      <AssessmentsSection candidate={candidate} only={stage} />
+    </Dialog>
+  );
+}
+
+export function AssessmentsSection({ candidate, only }: { candidate: Candidate; only?: InterviewStage }) {
+  const stages = STAGES.filter((stage) => (only ? stage === only : interviewReached(candidate, stage)));
   const [editing, setEditing] = useState<Editing | null>(null);
   if (stages.length === 0) return null;
   return (
@@ -240,7 +255,7 @@ function StageForms({ candidate, stage, onEdit }: { candidate: Candidate; stage:
   }
 
   return (
-    <div className="mt-4">
+    <div className="mt-4 first:mt-0">
       <div className="mb-1 flex flex-wrap items-baseline gap-x-3">
         <h4 className="text-xs font-semibold text-ink-soft">{STAGE_LABEL[stage]}: assessment forms</h4>
         {average.percent !== null && (
@@ -307,12 +322,14 @@ function StageForms({ candidate, stage, onEdit }: { candidate: Candidate; stage:
           );
         })}
         {filled.length === 0 && missing.length === 0 && (
-          <li className="px-3 py-2 text-sm text-ink-muted">No form yet. Put interviewers on this position's panel from the CV bucket page.</li>
+          <li className="px-3 py-2 text-sm text-ink-muted">
+            No interviewer is on this position's {STAGE_LABEL[stage].toLowerCase()} panel yet. Add them on the Interviewers page or the CV bucket's Interview panel, or enter marks from a paper form below.
+          </li>
         )}
       </ul>
       {canWrite && (
-        <Button size="sm" variant="ghost" icon={Plus} className="mt-1" onClick={() => onEdit({ kind: 'marks', stage, interviewerId: null })}>
-          Enter marks for another interviewer
+        <Button size="sm" variant={filled.length === 0 && missing.length === 0 ? 'primary' : 'ghost'} icon={Plus} className="mt-1" onClick={() => onEdit({ kind: 'marks', stage, interviewerId: null })}>
+          {filled.length === 0 && missing.length === 0 ? 'Enter marks from a paper form' : 'Enter marks for another interviewer'}
         </Button>
       )}
     </div>

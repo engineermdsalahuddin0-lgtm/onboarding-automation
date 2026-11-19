@@ -1042,6 +1042,20 @@ describe('interview assessment forms', () => {
     expect(await as(null, 'select * from guest_links')).toEqual([]);
   });
 
+  it("lets an interviewer read the profile, photo and CV of their panel's candidates, and nothing more", async () => {
+    await db.query(`update candidates set photo_path = 'photos/goni.jpg', cv_path = 'cvs/goni.pdf', education = '[{"degree": "MBA"}]' where id = $1`, [scheduled]);
+    await db.query(`update candidates set photo_path = 'photos/other.jpg' where id = $1`, [notYet]);
+    await db.query(`insert into storage.objects (bucket_id, name) values ('candidate-files', 'photos/goni.jpg'), ('candidate-files', 'cvs/goni.pdf'), ('candidate-files', 'photos/other.jpg')`);
+    const [{ r }] = await as(MIZAN, 'select my_interviews() as r');
+    const goni = r.assignments[0].candidates[0];
+    expect(goni).toMatchObject({ photo_path: 'photos/goni.jpg', cv_path: 'cvs/goni.pdf', education: [{ degree: 'MBA' }] });
+    for (const hidden of ['phone', 'email', 'national_id', 'father_name']) expect(goni).not.toHaveProperty(hidden);
+    const files = (await as(MIZAN, `select name from storage.objects where bucket_id = 'candidate-files' order by name`)).map((f) => f.name);
+    expect(files).toEqual(['cvs/goni.pdf', 'photos/goni.jpg']);
+    expect(await as(OTHER, `select name from storage.objects where name = 'photos/other.jpg'`)).toEqual([]);
+    expect(await as(STRANGER, `select name from storage.objects where name like 'photos/%'`)).toEqual([]);
+  });
+
   it('lets each person keep their own details and signature', async () => {
     const [{ r }] = await as(MIZAN, `select save_my_details('Mizanur Rahman', 'General Manager', 'HR & Admin', '') as r`);
     expect(r).toMatchObject({ job_title: 'General Manager', signature: '' });

@@ -7,6 +7,7 @@ import { BulkUploadDialog } from '../components/BulkUpload';
 import { HelpTip } from '../components/Guide';
 import { HandoverDialog } from '../components/HandoverDialog';
 import { InterviewPanelDialog } from '../components/InterviewPanel';
+import { RejectionDetails, RoundDetails, useRound } from '../components/InterviewSummary';
 import { ConfirmCallsDialog, copyText, MissedDialog, NewDateDialog, ScheduleDialog, ScreeningRejectDialog } from '../components/PipelineDialogs';
 import { ProcessMini } from '../components/ProcessBar';
 import { ActionIcon, Avatar, Button, Confirm, EmptyState, errorText, HoverTooltip, PageHeader, RangeSlider, RecommendationStars, Select, SortHeader, StatusBadge, TH, THEAD, TooltipList, useToast } from '../components/ui';
@@ -15,9 +16,9 @@ import { downloadXlsx, type ExportColumn } from '../lib/export';
 import { candidateSalary, commonAreas, genderOf, hasFilters, INDUSTRY_NOT_STATED, matchesFilters, NO_FILTERS, NOT_STATED, sliderBounds, usesExperienceFilter, usesSalaryFilter, type CandidateFilters } from '../lib/filters';
 import { ageYears, classNames, dateMedium, duration, money, todayIso, whenText } from '../lib/format';
 import { placeText } from '../lib/org';
-import { bucketStats, can, CATEGORY_LABELS, isRejected, matchesStageFilter, nextAction, normalizePhone, processPosition, recommendationCount, rejectScreening, shortlist, stageOf, type StageFilter } from '../lib/pipeline';
+import { bucketStats, can, interviewDay, CATEGORY_LABELS, isRejected, matchesStageFilter, nextAction, normalizePhone, processPosition, recommendationCount, rejectScreening, shortlist, stageOf, type StageFilter } from '../lib/pipeline';
 import { useFileUrls, useStore } from '../lib/store';
-import { handlerNames, processTeam } from '../lib/team';
+import { handlerNames, personName, processTeam } from '../lib/team';
 import type { Candidate, Profile } from '../types';
 
 type SortColumn = 'name' | 'experience' | 'received' | 'stage' | 'review';
@@ -40,8 +41,8 @@ const STAGES: { value: StageFilter; label: string; help: string; action?: string
   { value: 'new', label: 'New CVs', help: 'CVs not reviewed yet. Open one, read it, then select or reject.' },
   { value: 'calling', label: 'Shortlisted', action: 'To call', help: 'Shortlisted from their CV, waiting for your phone call or a follow-up.' },
   { value: 'messaging', label: 'To schedule', help: 'Confirmed on the call, waiting for a primary interview date and time.' },
-  { value: 'primary', label: 'Primary', help: 'Primary interview scheduled, waiting for the result. Also those who missed it: tick them to mark Absent or Can\'t attend, or give a new date.' },
-  { value: 'secondary', label: 'Final', help: 'Passed the primary interview: final schedule or result still to come, including those who missed the final interview.' },
+  { value: 'primary', label: 'Primary interview attendees', help: 'Primary interview scheduled, waiting for the result. Also those who missed it: tick them to mark Absent or Can\'t attend, or give a new date.' },
+  { value: 'secondary', label: 'Final interview attendees', help: 'Passed the primary interview: final schedule or result still to come, including those who missed the final interview.' },
   { value: 'decision', label: 'Decision', help: 'Passed the final interview, waiting for the confirmation letter or a rejection.' },
   { value: 'confirmed', label: 'Confirmed', help: 'Confirmation letter sent. The process is locked.' },
   { value: 'rejected', label: 'Rejected', help: 'Stopped at some step. The card shows where and why.' },
@@ -451,6 +452,9 @@ export function BucketDetailPage() {
   ].filter(Boolean);
 
   const urls = useFileUrls(visible.slice(0, 300).map((c) => c.photo_path));
+  // How each interview round went and who interviews, for the tiles' hover cards and the panel line.
+  const primaryRound = useRound(bucket?.id ?? '', items, 'primary');
+  const finalRound = useRound(bucket?.id ?? '', items, 'secondary');
 
   if (!bucket) {
     return <EmptyState icon={Users} title="This bucket was not found" action={<Link className="text-sm underline" to="/buckets">Back to CV Buckets</Link>} />;
@@ -470,9 +474,7 @@ export function BucketDetailPage() {
     }
   }
 
-  const applyLink = `${location.origin}/apply/${bucket.code}`;
-  const panelCount = new Set(panels.filter((p) => p.bucket_id === bucket.id).map((p) => p.interviewer_id)).size;
-  const maxSource = stats.sources[0]?.count ?? 1;
+  const applyLink = `${location.origin}/apply/${bucket.code}`;  const maxSource = stats.sources[0]?.count ?? 1;
   // Bulk actions follow the desks: screening for new CVs, the process team for the schedules.
   const canShortlist = canScreen ? selected.filter((c) => c.screening_status === 'new') : [];
   const canConfirmCall = canProcess ? selected.filter(can.confirmCall) : [];
@@ -495,9 +497,7 @@ export function BucketDetailPage() {
         titleActions={
           <>
             {canWrite && <ActionIcon label="Edit bucket" icon={Pencil} onClick={() => setModal({ kind: 'edit' })} />}
-            <ActionIcon data-tour="bucket-link" label="Copy application link" icon={Link2} onClick={() => void copyText(applyLink).then(() => toast('Application form link copied.'))} />
-            <ActionIcon label={`Interview panel${panelCount ? ` (${panelCount} interviewer${panelCount === 1 ? '' : 's'})` : ''}: who marks the primary and final interviews`} icon={ClipboardPen} onClick={() => setModal({ kind: 'panel' })} />
-            <ActionIcon label="Download" icon={Download} disabled={visible.length === 0} onClick={() => void downloadXlsx(visible, EXPORT_COLUMNS, `${bucket.designation}-${todayIso()}.xlsx`, bucket.designation)} />
+            <ActionIcon data-tour="bucket-link" label="Copy application link" icon={Link2} onClick={() => void copyText(applyLink).then(() => toast('Application form link copied.'))} />            <ActionIcon label="Download" icon={Download} disabled={visible.length === 0} onClick={() => void downloadXlsx(visible, EXPORT_COLUMNS, `${bucket.designation}-${todayIso()}.xlsx`, bucket.designation)} />
             {canWrite && (isAdmin || items.length === 0) && <ActionIcon label="Delete bucket" icon={Trash2} onClick={() => setModal({ kind: 'delete' })} />}
             {canScreen && <ActionIcon data-tour="bucket-upload" label="Upload CVs" icon={Upload} primary onClick={() => setModal({ kind: 'upload' })} />}
             <HelpTip label="How to use this CV bucket">
@@ -516,31 +516,60 @@ export function BucketDetailPage() {
             {bucket.primary_date
               ? <>Primary interview <strong className="tabular font-medium text-ink">{whenText(bucket.primary_date, bucket.primary_time)}</strong></>
               : <span className="text-amber-900">No primary interview date yet{canWrite ? ' (edit the bucket to add it)' : ''}</span>}
+            {(() => {
+              const final = interviewDay(stats.finalDays, todayIso());
+              return final && <>{' · '}Final interview <strong className="tabular font-medium text-ink">{dateMedium(final.day)}</strong>{final.more > 0 ? ` +${final.more} more day${final.more === 1 ? '' : 's'}` : ''}</>;
+            })()}
             {requisition && <> · <Link className="underline" to="/requisitions">{requisition.ref_no}</Link> ({requisition.vacancies} vacanc{requisition.vacancies === 1 ? 'y' : 'ies'})</>}
           </>
         }
       />
 
-      <div data-tour="bucket-tiles" role="tablist" aria-label="Where candidates stand" className="grid grid-cols-[repeat(auto-fit,minmax(5.75rem,1fr))] gap-2">
-        {STAGES.map(({ value, label, action }) => (
-          <button
-            key={value}
-            type="button"
-            role="tab"
-            aria-selected={filter === value}
-            onClick={() => setFilter(value)}
-            className={classNames(
-              'rounded-xl border bg-surface px-3 py-2 text-left transition-colors hover:border-line-strong',
-              filter === value ? 'border-brand-600 ring-1 ring-brand-600' : 'border-line',
-            )}
-          >
-            <span className="block truncate text-xs font-medium text-ink-muted">{label}</span>
-            <span className="flex items-baseline justify-between gap-1.5">
-              <span className="tabular text-xl font-semibold tracking-tight">{counts[value]}</span>
-              {action && <span className="truncate text-[10px] font-medium text-ink-muted">Action: {action}</span>}
+      {/* Who takes this position's interviews. */}
+      <section className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border border-line bg-surface px-3 py-2 text-sm">
+        <h2 className="text-xs font-semibold text-ink-soft">Interviewers</h2>
+        {([['Primary interview', 'primary'], ['Final interview', 'secondary']] as const).map(([label, stage]) => {
+          const members = panels.filter((p) => p.bucket_id === bucket.id && p.stage === stage).map((p) => personName(team.find((t) => t.id === p.interviewer_id)));
+          return (
+            <span key={stage} className="min-w-0">
+              <span className="text-ink-soft">{label}: </span>
+              {members.length > 0 ? <span className="font-medium">{members.join(', ')}</span> : <span className="text-ink-muted">none yet</span>}
             </span>
-          </button>
-        ))}
+          );
+        })}
+        <Button size="sm" variant="ghost" icon={ClipboardPen} className="ml-auto" onClick={() => setModal({ kind: 'panel' })}>
+          {canWrite ? 'Change interviewers' : 'See interviewers'}
+        </Button>
+      </section>
+
+      <div data-tour="bucket-tiles" role="tablist" aria-label="Where candidates stand" className="grid grid-cols-[repeat(auto-fit,minmax(6.5rem,1fr))] gap-2">
+        {STAGES.map(({ value, label, action }) => {
+          const tile = (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={filter === value}
+              onClick={() => setFilter(value)}
+              className={classNames(
+                'h-full w-full rounded-xl border bg-surface px-3 py-2 text-left transition-colors hover:border-line-strong',
+                filter === value ? 'border-brand-600 ring-1 ring-brand-600' : 'border-line',
+              )}
+            >
+              <span className="block text-xs leading-tight font-medium text-ink-muted">{label}</span>
+              <span className="flex items-baseline justify-between gap-1.5">
+                <span className="tabular text-xl font-semibold tracking-tight">{counts[value]}</span>
+                {action && <span className="truncate text-[10px] font-medium text-ink-muted">Action: {action}</span>}
+              </span>
+            </button>
+          );
+          // The interview and rejected tiles explain themselves on hover: who came, who missed, who interviewed, where people stopped.
+          const details = value === 'primary' ? <RoundDetails round={primaryRound} showNames />
+            : value === 'secondary' ? <RoundDetails round={finalRound} showNames />
+            : value === 'rejected' ? <RejectionDetails items={items} />
+            : null;
+          return details ? <HoverTooltip key={value} details={details}>{tile}</HoverTooltip> : tile;
+        })}
       </div>
       <p className="mt-2 text-sm text-ink-soft">{help}</p>
 

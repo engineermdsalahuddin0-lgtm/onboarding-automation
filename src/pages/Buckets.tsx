@@ -1,17 +1,50 @@
-import { Archive, CalendarDays, ChevronRight, Folder, FolderOpen, FolderPlus, FolderTree, Search, X } from 'lucide-react';
+import { Archive, CalendarClock, CalendarDays, ChevronRight, Folder, FolderOpen, FolderPlus, FolderTree, Search, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { FOLDER_COLORS } from '../components/BucketForm';
 import { HelpTip } from '../components/Guide';
 import { NewRecruitmentDialog } from '../components/NewRecruitment';
-import { Button, EmptyState, PageHeader, Select } from '../components/ui';
-import { classNames, dateMedium } from '../lib/format';
+import { RejectionDetails, RoundDetails, useRound } from '../components/InterviewSummary';
+import { Button, EmptyState, HoverTooltip, PageHeader, Select } from '../components/ui';
+import { classNames, dateMedium, time12, todayIso } from '../lib/format';
 import { nameKey, placeText } from '../lib/org';
-import { bucketStats, type BucketStats } from '../lib/pipeline';
+import { bucketStats, interviewDay, type BucketStats } from '../lib/pipeline';
 import { useStore } from '../lib/store';
 import type { CvBucket } from '../types';
 
+/** The folder's hover card: how its interviews went, who interviewed, and where people were rejected. */
+function FolderDetails({ bucket, stats }: { bucket: CvBucket; stats: BucketStats }) {
+  const { candidates } = useStore();
+  const items = useMemo(() => candidates.filter((c) => c.bucket_id === bucket.id), [candidates, bucket.id]);
+  const primary = useRound(bucket.id, items, 'primary');
+  const final = useRound(bucket.id, items, 'secondary');
+  const absent = items.filter((c) => c.primary_attendance === 'absent' || c.secondary_attendance === 'absent').length;
+  return (
+    <>
+      <section className="mb-2.5 border-b border-line pb-2.5">
+        <p className="mb-1 font-semibold text-ink">{bucket.designation}</p>
+        <ul className="space-y-0.5">
+          {([['Selected at the final interview', stats.secondarySelected], ['Rejected', stats.rejected], ['Absent from an interview', absent]] as const).map(([label, value]) => (
+            <li key={label} className="flex justify-between gap-3"><span className="text-ink">{label}</span><span className="tabular font-semibold text-ink">{value}</span></li>
+          ))}
+        </ul>
+      </section>
+      <RoundDetails round={primary} />
+      <RoundDetails round={final} />
+      <RejectionDetails items={items} limit={3} />
+    </>
+  );
+}
+
 export function BucketFolder({ bucket, stats }: { bucket: CvBucket; stats: BucketStats }) {
+  return (
+    <HoverTooltip side="beside" details={<FolderDetails bucket={bucket} stats={stats} />}>
+      <FolderCard bucket={bucket} stats={stats} />
+    </HoverTooltip>
+  );
+}
+
+function FolderCard({ bucket, stats }: { bucket: CvBucket; stats: BucketStats }) {
   const color = FOLDER_COLORS[bucket.color] ?? FOLDER_COLORS.stone;
   const open = bucket.status === 'Open';
   return (
@@ -32,6 +65,7 @@ export function BucketFolder({ bucket, stats }: { bucket: CvBucket; stats: Bucke
         <p className="mt-2 flex items-center gap-1 text-xs text-ink-soft">
           <CalendarDays className="size-3.5" aria-hidden /> Created {dateMedium(bucket.created_at)}
         </p>
+        <InterviewDays bucket={bucket} stats={stats} />
         {/* Columns size to their labels: with five, equal widths would not leave "Shortlisted" enough room. */}
         <dl className="mt-3 flex justify-between gap-1 border-t border-black/5 pt-3 text-center">
           {[
@@ -49,6 +83,32 @@ export function BucketFolder({ bucket, stats }: { bucket: CvBucket; stats: Bucke
         </dl>
       </div>
     </Link>
+  );
+}
+
+/**
+ * The primary and final interview days on the folder: the next day candidates are scheduled for (or the
+ * last one), with how many other days there are. The bucket's own primary day counts too.
+ */
+function InterviewDays({ bucket, stats }: { bucket: CvBucket; stats: BucketStats }) {
+  const today = todayIso();
+  const primaryDays = [...new Set([...stats.primaryDays, ...(bucket.primary_date ? [bucket.primary_date] : [])])].sort();
+  const rows: [string, ReturnType<typeof interviewDay>, string][] = [
+    ['Primary', interviewDay(primaryDays, today), bucket.primary_date === interviewDay(primaryDays, today)?.day ? bucket.primary_time : ''],
+    ['Final', interviewDay(stats.finalDays, today), ''],
+  ];
+  return (
+    <dl className="mt-1 space-y-0.5 text-xs">
+      {rows.map(([label, next, time]) => (
+        <div key={label} className="flex items-start gap-1 text-ink-soft">
+          <CalendarClock className="mt-px size-3.5 shrink-0" aria-hidden />
+          <dt className="shrink-0">{label}:</dt>
+          <dd className={classNames('min-w-0', next ? 'font-medium text-ink' : 'text-ink-muted')}>
+            {next ? `${dateMedium(next.day)}${time ? `, ${time12(time)}` : ''}${next.day < today ? ' (done)' : ''}${next.more > 0 ? ` +${next.more} more day${next.more === 1 ? '' : 's'}` : ''}` : 'Not set'}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
