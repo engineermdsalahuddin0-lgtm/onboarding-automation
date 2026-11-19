@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, Briefcase, Calendar, CalendarX, Check, ChevronDown, ClipboardPen, Copy, Download, ExternalLink, FileText, House, Link2, Mail, MapPin, MessageSquare, Pencil, Phone, PhoneCall, Search, Trash2, Upload, UserPlus, UserX, Users, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Briefcase, Calendar, CalendarX, Check, ChevronDown, ClipboardPen, Copy, Download, ExternalLink, FileText, House, Link2, Mail, MapPin, MessageSquare, Pencil, Phone, PhoneCall, Search, Send, Trash2, Upload, UserPlus, UserX, Users, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { BucketFormDialog } from '../components/BucketForm';
@@ -31,6 +31,7 @@ type Modal =
   | { kind: 'reject'; candidates: Candidate[] }
   | { kind: 'rejectOne'; candidate: Candidate }
   | { kind: 'handover'; candidates: Candidate[] }
+  | { kind: 'reassign'; candidates: Candidate[] }
   | { kind: 'upload' }
   | { kind: 'edit' }
   | { kind: 'delete' }
@@ -485,6 +486,10 @@ export function BucketDetailPage() {
   // Each button acts only on the people it fits; say how many of the selection that leaves out.
   const skipped = (eligible: Candidate[]) => (eligible.length < selected.length ? ` (${selected.length - eligible.length} skipped)` : '');
   const hasProcessTeam = processTeam(team).some((p) => p.id !== user?.id);
+  // Already handed over and still in process: the screening desk can give them to someone else, as Change on the card does.
+  const canHandOn = canScreen && processTeam(team).length > 1
+    ? selected.filter((c) => c.screening_status === 'shortlisted' && c.final_decision === null)
+    : [];
   const help = STAGES.find((stage) => stage.value === filter)?.help;
 
   return (
@@ -724,6 +729,11 @@ export function BucketDetailPage() {
               </Button>
             )}
             {canShortlist.length > 0 && <Button size="sm" icon={X} onClick={() => setModal({ kind: 'reject', candidates: canShortlist })}>Reject {canShortlist.length}</Button>}
+            {canHandOn.length > 0 && (
+              <Button size="sm" icon={Send} title="Give candidates already handed over to someone else on the process team" onClick={() => setModal({ kind: 'reassign', candidates: canHandOn })}>
+                Hand {canHandOn.length} to someone else{skipped(canHandOn)}
+              </Button>
+            )}
             {canConfirmCall.length > 0 && (
               <Button size="sm" icon={PhoneCall} title="Record that they confirmed on the call. With a primary interview day on this bucket, they are scheduled for it too." onClick={() => setModal({ kind: 'confirmCalls', candidates: canConfirmCall })}>
                 Call confirmed for {canConfirmCall.length}{skipped(canConfirmCall)}
@@ -827,6 +837,7 @@ export function BucketDetailPage() {
       )}
       {modal?.kind === 'rejectOne' && <ScreeningRejectDialog candidate={modal.candidate} onClose={() => setModal(null)} />}
       {modal?.kind === 'handover' && <HandoverDialog candidates={modal.candidates} mode="select" onClose={() => setModal(null)} onDone={() => setSelection(new Set())} />}
+      {modal?.kind === 'reassign' && <HandoverDialog candidates={modal.candidates} mode="reassign" onClose={() => setModal(null)} onDone={() => setSelection(new Set())} />}
       {modal?.kind === 'upload' && <BulkUploadDialog bucketId={bucket.id} onClose={() => setModal(null)} />}
       {modal?.kind === 'edit' && <BucketFormDialog bucket={bucket} onClose={() => setModal(null)} />}
       {modal?.kind === 'delete' && <DeleteBucketDialog bucket={bucket} onClose={() => setModal(null)} />}

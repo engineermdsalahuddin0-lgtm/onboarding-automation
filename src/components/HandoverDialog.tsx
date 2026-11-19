@@ -33,12 +33,14 @@ export function HandoverDialog({ candidates, mode, onClose, onDone }: {
   const toast = useToast();
   const people = processTeam(team).filter((p) => p.id !== user?.id);
   const first = candidates[0];
-  // One or several people, or nobody chosen for the whole process team. The last choice is offered again.
-  const initial = mode === 'reassign' ? first.assigned_to : storedChoice();
-  const [to, setTo] = useState<string[]>(() => initial.filter((id) => people.some((p) => p.id === id)));
-  const [note, setNote] = useState(mode === 'reassign' ? first.handover_note : '');
-  const [busy, setBusy] = useState(false);
   const many = candidates.length > 1;
+  // Handing several on: they start ticked as they are only when all are with the same people.
+  const sameHands = candidates.every((c) => [...c.assigned_to].sort().join() === [...first.assigned_to].sort().join());
+  // One or several people, or nobody chosen for the whole process team. The last choice is offered again.
+  const initial = mode === 'reassign' ? (sameHands ? first.assigned_to : []) : storedChoice();
+  const [to, setTo] = useState<string[]>(() => initial.filter((id) => people.some((p) => p.id === id)));
+  const [note, setNote] = useState(mode === 'reassign' && !many ? first.handover_note : '');
+  const [busy, setBusy] = useState(false);
   const and = (list: string[]) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list.join(''));
   const names = and(people.map((p) => personName(p)));
   const chosenName = to.length > 0 ? and(to.map((id) => personName(people.find((p) => p.id === id)))) : 'the whole process team';
@@ -53,12 +55,13 @@ export function HandoverDialog({ candidates, mode, onClose, onDone }: {
       for (const c of candidates) {
         await updateCandidate(c.id, mode === 'select'
           ? shortlist({ to: assigned, note, by: user?.full_name || user?.email || '' })
-          : reassign(assigned, note));
+          // Several at once: an empty note keeps each candidate's own note.
+          : reassign(assigned, many && !note.trim() ? undefined : note));
       }
       if (mode === 'select') localStorage.setItem(LAST_CHOICE, JSON.stringify(assigned));
       toast(mode === 'select'
         ? `${many ? `${candidates.length} CVs` : first.full_name} selected and handed to ${chosenName}. Next: the call.`
-        : `${first.full_name} is now with ${chosenName}.`);
+        : `${many ? `${candidates.length} candidates are` : `${first.full_name} is`} now with ${chosenName}.`);
       onDone?.();
       onClose();
     } catch (error) {
@@ -79,8 +82,10 @@ export function HandoverDialog({ candidates, mode, onClose, onDone }: {
 
   return (
     <Dialog
-      title={mode === 'select' ? (many ? `Select ${candidates.length} CVs and hand over` : `Select ${first.full_name} and hand over`) : `Hand ${first.full_name} to someone else`}
-      description={mode === 'select' ? 'The process team takes it from here: call, interviews, decision and joining. They are told at once.' : 'The person you choose is told at once.'}
+      title={mode === 'select' ? (many ? `Select ${candidates.length} CVs and hand over` : `Select ${first.full_name} and hand over`) : `Hand ${many ? `${candidates.length} candidates` : first.full_name} to someone else`}
+      description={mode === 'select'
+        ? 'The process team takes it from here: call, interviews, decision and joining. They are told at once.'
+        : `${many ? 'They keep the steps done so far. ' : ''}The people you choose are told at once.`}
       onClose={onClose}
       width="max-w-md"
       footer={
@@ -98,7 +103,7 @@ export function HandoverDialog({ candidates, mode, onClose, onDone }: {
           {people.map((p) => option(p.id, personName(p), p.job_title || 'Process desk', to.includes(p.id), () => toggle(p.id)))}
           {to.length > 1 && <p className="text-xs font-medium text-brand-700">Handing to {to.length} people: {chosenName}.</p>}
         </fieldset>
-        <TextArea label="Note for them (optional)" rows={2} placeholder="For example: strong candidate, call today" value={note} onChange={(e) => setNote(e.target.value)} />
+        <TextArea label="Note for them (optional)" rows={2} placeholder={mode === 'reassign' && many ? 'Leave empty to keep the note each one has' : 'For example: strong candidate, call today'} value={note} onChange={(e) => setNote(e.target.value)} />
       </form>
     </Dialog>
   );
