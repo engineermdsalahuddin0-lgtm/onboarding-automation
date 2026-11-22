@@ -3,9 +3,10 @@ import { useMemo, useState, type FormEvent } from 'react';
 import { enteredByText, guestLinkUrl, isFilled, RECOMMENDATION_LABEL, scoreOf, stageAverage, STAGE_LABEL, todayBd, type FormHeader } from '../lib/assessment';
 import { downloadAssessments, printAssessments, type PrintableAssessment } from '../lib/assessmentPdf';
 import { classNames, dateDmy } from '../lib/format';
+import { guessSide, SIDE_LABEL } from '../lib/selectionReport';
 import { useStore } from '../lib/store';
 import { personName } from '../lib/team';
-import type { AssessmentInput, Candidate, CvBucket, InterviewAssessment, InterviewStage, Profile } from '../types';
+import type { AssessmentInput, Candidate, CvBucket, InterviewAssessment, InterviewStage, PanelSide, Profile } from '../types';
 import { AssessmentForm } from './AssessmentForm';
 import { copyText } from './PipelineDialogs';
 import { SignaturePad } from './SignaturePad';
@@ -38,10 +39,23 @@ export function InterviewPanelDialog({ bucket, onClose }: { bucket: CvBucket; on
   );
 }
 
+/** HRD or the team, for a primary interviewer: their column on the primary selection report. */
+function SideSelect({ value, onChange, disabled, label }: { value: PanelSide; onChange: (side: Exclude<PanelSide, ''>) => void; disabled?: boolean; label?: string }) {
+  return (
+    <Select label={label} aria-label={label ? undefined : 'Sits for'} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value as Exclude<PanelSide, ''>)}>
+      {value === '' && <option value="">Choose…</option>}
+      <option value="hrd">HRD</option>
+      <option value="team">Team (the department)</option>
+    </Select>
+  );
+}
+
 function StagePanel({ bucket, stage }: { bucket: CvBucket; stage: InterviewStage }) {
-  const { panels, team, guestLinks, canWrite, addToPanel, removeFromPanel, createGuestLink, removeGuestLink } = useStore();
+  const { panels, team, guestLinks, canWrite, addToPanel, removeFromPanel, setPanelSide, createGuestLink, removeGuestLink } = useStore();
   const toast = useToast();
   const [adding, setAdding] = useState('');
+  const [side, setSide] = useState<PanelSide>('');
+  const primary = stage === 'primary';
   const [linkDay, setLinkDay] = useState(() => (stage === 'primary' && bucket.primary_date && bucket.primary_date >= todayBd() ? bucket.primary_date : todayBd()));
   const [busy, setBusy] = useState(false);
   const members = panels.filter((p) => p.bucket_id === bucket.id && p.stage === stage);
@@ -63,7 +77,13 @@ function StagePanel({ bucket, stage }: { bucket: CvBucket; stage: InterviewStage
 
   return (
     <section>
-      <h3 className="mb-2 text-sm font-semibold">{STAGE_LABEL[stage]}</h3>
+      <h3 className="text-sm font-semibold">{STAGE_LABEL[stage]}</h3>
+      {primary && (
+        <p className="mb-2 text-xs text-ink-muted">
+          One interviewer from HRD and one from the team (the department that asked for this post). It decides their column on the primary selection report.
+        </p>
+      )}
+      {!primary && <div className="mb-2" />}
       {members.length === 0 ? (
         <p className="text-sm text-ink-muted">No interviewer yet.</p>
       ) : (
@@ -78,6 +98,13 @@ function StagePanel({ bucket, stage }: { bucket: CvBucket; stage: InterviewStage
                   <span className="block truncate text-xs text-ink-muted">{[person?.job_title, person?.department].filter(Boolean).join(', ') || (person ? roleText(person) : '')}</span>
                 </span>
                 {person && !person.signature && <StatusBadge tone="neutral">No saved signature</StatusBadge>}
+                {primary && (canWrite ? (
+                  <SideSelect
+                    value={member.side ?? ''}
+                    disabled={busy}
+                    onChange={(next) => void run(() => setPanelSide(member.id, next), `${personName(person)} sits for ${SIDE_LABEL[next]}.`)}
+                  />
+                ) : member.side ? <StatusBadge tone="info">{SIDE_LABEL[member.side]}</StatusBadge> : null)}
                 {canWrite && (
                   <IconButton
                     label={`Take ${personName(person)} off the ${STAGE_LABEL[stage].toLowerCase()}`}
@@ -94,17 +121,31 @@ function StagePanel({ bucket, stage }: { bucket: CvBucket; stage: InterviewStage
       {canWrite && (
         <div className="mt-2 flex flex-wrap items-end gap-2">
           <div className="min-w-60 flex-1">
-            <Select label="Add an interviewer" value={adding} onChange={(e) => setAdding(e.target.value)}>
+            <Select
+              label="Add an interviewer"
+              value={adding}
+              onChange={(e) => {
+                setAdding(e.target.value);
+                const person = team.find((p) => p.id === e.target.value);
+                setSide(person ? guessSide(person.department) : '');
+              }}
+            >
               <option value="">Choose…</option>
               {available.map((p) => <option key={p.id} value={p.id}>{personName(p)}{p.job_title ? `, ${p.job_title}` : ''} ({roleText(p)})</option>)}
             </Select>
           </div>
+          {primary && adding && (
+            <div className="w-48">
+              <SideSelect label="Sits for" value={side} disabled={busy} onChange={setSide} />
+            </div>
+          )}
           <Button
             icon={UserPlus}
-            disabled={!adding || busy}
+            disabled={!adding || busy || (primary && !side)}
             onClick={() => void run(async () => {
-              await addToPanel(bucket.id, stage, adding);
+              await addToPanel(bucket.id, stage, adding, side);
               setAdding('');
+              setSide('');
             }, 'Added to the panel.')}
           >
             Add

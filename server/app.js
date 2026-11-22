@@ -3,7 +3,7 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { aiStatus, authorize, parseCv, ParseError } from './ai.js';
-import { createInterviewer } from './team.js';
+import { createInterviewer, createUser, deleteUser, updateUser } from './team.js';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -42,6 +42,31 @@ const teamLimiter = rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: 'd
 app.post('/api/team/interviewers', teamLimiter, express.json({ limit: '50kb' }), async (req, res) => {
   try {
     res.json(await createInterviewer(req.headers.authorization, req.body));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+// User accounts, for an admin: create, change (details, email, password), delete.
+app.post('/api/team/users', teamLimiter, express.json({ limit: '50kb' }), async (req, res) => {
+  try {
+    res.json(await createUser(req.headers.authorization, req.body));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+app.patch('/api/team/users/:id', teamLimiter, express.json({ limit: '50kb' }), async (req, res) => {
+  try {
+    res.json(await updateUser(req.headers.authorization, req.params.id, req.body));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+app.delete('/api/team/users/:id', teamLimiter, async (req, res) => {
+  try {
+    res.json(await deleteUser(req.headers.authorization, req.params.id));
   } catch (error) {
     sendError(res, error);
   }

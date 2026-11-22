@@ -1673,6 +1673,13 @@ create table if not exists public.interview_panels (
   unique (bucket_id, stage, interviewer_id)
 );
 
+-- On the primary interview, whether the interviewer sits for HRD or for the team (the department that asked
+-- for the post). It is their column on the primary selection report. Blank on the final interview.
+alter table public.interview_panels add column if not exists side text not null default '';
+alter table public.interview_panels drop constraint if exists interview_panels_side_check;
+alter table public.interview_panels add constraint interview_panels_side_check
+  check (side in ('', 'hrd', 'team') and (stage = 'primary' or side = ''));
+
 -- A link for interviewers without an account. It shows that bucket's interview of that day, and only on that day.
 create table if not exists public.guest_links (
   id uuid primary key default gen_random_uuid(),
@@ -2194,6 +2201,11 @@ begin
 end;
 $$;
 revoke update on public.interview_panels, public.guest_links from anon, authenticated;
+-- The one thing that changes on a panel seat: HRD or team.
+drop policy if exists interview_panels_update on public.interview_panels;
+create policy interview_panels_update on public.interview_panels for update to authenticated
+  using (public.can_write()) with check (public.can_write());
+grant update (side) on public.interview_panels to authenticated;
 
 -- Forms: staff read them, only an admin deletes one, and they are written only through the functions above.
 drop policy if exists interview_assessments_select on public.interview_assessments;
@@ -2218,6 +2230,31 @@ grant execute on function public.get_guest_interview(uuid, text) to anon, authen
 grant execute on function public.save_guest_assessment(uuid, uuid, jsonb, jsonb) to anon, authenticated;
 grant execute on function public.moderator_save_assessment(uuid, text, uuid, text, text, text, jsonb, text) to authenticated;
 grant execute on function public.moderator_sign_assessment(uuid, text, text, text) to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Deleting a user: an admin deletes the login from Settings > Team (the server does it with the service role
+-- key). What the person did stays on record under their name: forms, history, and correction requests.
+-- ---------------------------------------------------------------------------
+-- A correction request outlives the account that asked for it; requested_by_name keeps who it was.
+alter table public.edit_requests alter column requested_by drop not null;
+alter table public.edit_requests drop constraint if exists edit_requests_requested_by_fkey;
+alter table public.edit_requests add constraint edit_requests_requested_by_fkey
+  foreign key (requested_by) references public.profiles (id) on delete set null;
+
+-- Candidates handed to someone being deleted stay with the others they were handed to, or, when nobody is
+-- left, go to the whole process team. Called by the server just before it deletes the login.
+create or replace function public.release_handovers(p_user uuid)
+returns int language plpgsql security definer set search_path = '' as $$
+declare
+  moved int;
+begin
+  update public.candidates set assigned_to = array_remove(assigned_to, p_user) where p_user = any (assigned_to);
+  get diagnostics moved = row_count;
+  return moved;
+end;
+$$;
+revoke all on function public.release_handovers(uuid) from public, anon, authenticated;
+grant execute on function public.release_handovers(uuid) to service_role;
 
 -- ---------------------------------------------------------------------------
 -- Realtime: lets several HR users see each other's status changes without reloading

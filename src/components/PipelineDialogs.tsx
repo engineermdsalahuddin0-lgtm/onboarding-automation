@@ -2,6 +2,7 @@ import { Copy, Download, Mail, MessageCircle, Plus, Smartphone, Star, Trash2 } f
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { assessmentsToPanel } from '../lib/assessment';
 import { AssessmentsSection } from './InterviewPanel';
+import { FinalListNote } from './SelectionReport';
 import { backend } from '../lib/backend';
 import { DOCUMENT_CHECKLIST } from '../lib/defaults';
 import { downloadCsv } from '../lib/export';
@@ -990,6 +991,8 @@ export function ScheduleDialog({ candidates, stage, onClose }: { candidates: Can
           </Select>
         </div>
       </div>
+
+      {stage === 'secondary' && [...new Set(candidates.map((c) => c.bucket_id))].map((bucketId) => <FinalListNote key={bucketId} bucketId={bucketId} />)}
 
       <p className="mt-3 text-xs text-ink-muted">
         Tell the candidate with the buttons below, or download every message for your SMS gateway. The app does not send them by itself.

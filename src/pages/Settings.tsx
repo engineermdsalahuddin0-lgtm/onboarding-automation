@@ -1,15 +1,15 @@
-import { Check, KeyRound, RotateCcw, Upload, UserPlus } from 'lucide-react';
+import { Check, KeyRound, Pencil, RotateCcw, Trash2, Upload, UserPlus } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { NewInterviewerDialog } from '../components/InterviewerDialogs';
 import { OrgStructureEditor } from '../components/OrgStructureEditor';
-import { Button, Card, Confirm, errorText, PageHeader, Select, StatusBadge, TABLE, Tabs, TD, TextArea, TextInput, TH, THEAD, useToast } from '../components/ui';
+import { DeleteUserDialog, ROLE_LABELS, UserDialog } from '../components/UserDialogs';
+import { Button, Card, Confirm, errorText, PageHeader, StatusBadge, TABLE, Tabs, TD, TextArea, TextInput, TH, THEAD, useToast } from '../components/ui';
 import { backend } from '../lib/backend';
 import { aiHeaders } from '../lib/cv';
 import { DEFAULT_DOCUMENT_TEMPLATES, DEFAULT_MESSAGE_TEMPLATES } from '../lib/defaults';
 import { useFileUrls, useStore } from '../lib/store';
-import { DESK_LABELS } from '../lib/team';
-import type { Desk, DocumentTemplate, MessageTemplate, Profile, Role } from '../types';
+import { DESK_LABELS, personName } from '../lib/team';
+import type { DocumentTemplate, MessageTemplate, Profile } from '../types';
 
 type Tab = 'company' | 'units' | 'messages' | 'documents' | 'ai' | 'team';
 
@@ -334,55 +334,23 @@ function AiTab() {
 }
 
 function TeamTab() {
-  const { user, isAdmin, refreshUser, reload } = useStore();
-  const toast = useToast();
-  const [people, setPeople] = useState<Profile[]>([]);
-  const [adding, setAdding] = useState(false);
-
-  useEffect(() => {
-    void backend.list<Profile>('profiles', { order: { column: 'created_at' } }).then(setPeople);
-  }, []);
-
-  async function change(person: Profile, patch: Partial<Profile>, done: string) {
-    try {
-      const [saved] = await backend.update<Profile>('profiles', { id: person.id }, patch);
-      if (!saved) throw new Error('Only an admin can change the team.');
-      setPeople((current) => current.map((p) => (p.id === person.id ? saved : p)));
-      if (person.id === user?.id) await refreshUser();
-      // Names and desks show across the app, and decide who gets which notification.
-      void reload().catch(() => undefined);
-      toast(done);
-    } catch (error) {
-      toast(errorText(error), 'bad');
-    }
-  }
-
-  const label = (person: Profile) => person.full_name || person.email || 'this person';
-  // Saved when the field is left, and only if it changed.
-  const textField = (person: Profile, key: 'full_name' | 'job_title', what: string) => (
-    <TextInput
-      key={`${person.id}-${key}-${person[key] ?? ''}`}
-      aria-label={`${what} of ${label(person)}`}
-      disabled={!isAdmin}
-      defaultValue={person[key] ?? ''}
-      onBlur={(e) => {
-        const value = e.target.value.trim();
-        if (value !== (person[key] ?? '')) void change(person, { [key]: value }, `${what} saved.`);
-      }}
-    />
-  );
+  const { user, isAdmin, team } = useStore();
+  const [modal, setModal] = useState<{ kind: 'add' } | { kind: 'edit' | 'delete'; person: Profile } | null>(null);
+  // Waiting for a role first, then by name.
+  const people = [...team].sort((a, b) => Number(b.role === 'pending') - Number(a.role === 'pending') || personName(a).localeCompare(personName(b)));
 
   return (
     <div className="max-w-5xl space-y-3">
       <div className="flex flex-wrap items-start gap-3">
         <p className="flex-1 text-sm text-ink-soft">
-          To add staff, create their account in Supabase (Authentication &gt; Users &gt; Add user). They appear here as Pending and see nothing until you choose a role.
-          HR can do everything except delete records and change settings; Viewer can only look. An <strong>Interviewer</strong> signs in only to mark the interviews they are put on:
-          manage them on the <Link className="underline" to="/interviewers">Interviewers</Link> page.
+          {isAdmin ? 'Add a user with Add user: they sign in with the email and password you set. Change or delete anyone with the buttons on their row.' : 'Only an admin adds, changes or deletes users.'}
+          {' '}Someone who signs up on their own appears here as Pending and sees nothing until you give them a role. Interviewers are also on the <Link className="underline" to="/interviewers">Interviewers</Link> page.
         </p>
-        {isAdmin && <Button icon={UserPlus} onClick={() => setAdding(true)}>Add interviewer</Button>}
+        {isAdmin && <Button variant="primary" icon={UserPlus} onClick={() => setModal({ kind: 'add' })}>Add user</Button>}
       </div>
-      {adding && <NewInterviewerDialog onClose={() => setAdding(false)} onDone={(profile) => setPeople((current) => [...current.filter((p) => p.id !== profile.id), profile])} />}
+      {modal?.kind === 'add' && <UserDialog onClose={() => setModal(null)} />}
+      {modal?.kind === 'edit' && <UserDialog person={modal.person} onClose={() => setModal(null)} />}
+      {modal?.kind === 'delete' && <DeleteUserDialog person={modal.person} onClose={() => setModal(null)} />}
       <div className="rounded-xl border border-line bg-surface px-4 py-3 text-sm text-ink-soft">
         <p className="font-medium text-ink">Desk: who does which part of the work</p>
         <ul className="mt-1 list-disc space-y-0.5 pl-5">
@@ -396,41 +364,37 @@ function TeamTab() {
           <thead className={THEAD}>
             <tr>
               <th scope="col" className={TH}>Name</th>
-              <th scope="col" className={TH}>Designation</th>
-              <th scope="col" className={TH}>Email</th>
-              <th scope="col" className={TH}>Desk</th>
+              <th scope="col" className={TH}>Email (login)</th>
               <th scope="col" className={TH}>Role</th>
+              <th scope="col" className={TH}>Desk</th>
+              {isAdmin && <th scope="col" className={TH}><span className="sr-only">Actions</span></th>}
             </tr>
           </thead>
           <tbody>
             {people.map((person) => (
               <tr key={person.id}>
                 <td className={TD}>
-                  <div className="flex min-w-40 items-center gap-1.5">
-                    {textField(person, 'full_name', 'Name')}
-                    {person.id === user?.id && <span className="shrink-0 text-xs text-ink-muted">(you)</span>}
-                  </div>
+                  <span className="block font-medium">
+                    {personName(person)}
+                    {person.id === user?.id && <span className="ml-1.5 text-xs font-normal text-ink-muted">(you)</span>}
+                  </span>
+                  <span className="block text-xs text-ink-muted">{[person.job_title, person.department].filter(Boolean).join(', ')}</span>
                 </td>
-                <td className={TD}><div className="min-w-48">{textField(person, 'job_title', 'Designation')}</div></td>
-                <td className={TD}>{person.email}</td>
+                <td className={`${TD} text-xs`}>{person.email}</td>
                 <td className={TD}>
-                  <div className="w-56">
-                    <Select aria-label={`Desk of ${label(person)}`} disabled={!isAdmin} value={person.desk} onChange={(e) => void change(person, { desk: e.target.value as Desk }, `${label(person)}: ${DESK_LABELS[e.target.value as Desk]}.`)}>
-                      {(Object.keys(DESK_LABELS) as Desk[]).map((desk) => <option key={desk} value={desk}>{DESK_LABELS[desk]}</option>)}
-                    </Select>
-                  </div>
+                  <StatusBadge tone={person.role === 'pending' ? 'warning' : person.role === 'admin' ? 'good' : 'neutral'}>{ROLE_LABELS[person.role]}</StatusBadge>
                 </td>
-                <td className={TD}>
-                  <div className="w-36">
-                    <Select aria-label={`Role of ${label(person)}`} disabled={!isAdmin} value={person.role} onChange={(e) => void change(person, { role: e.target.value as Role }, `${label(person)} is now ${e.target.value}.`)}>
-                      <option value="admin">Admin</option>
-                      <option value="hr">HR</option>
-                      <option value="viewer">Viewer</option>
-                      <option value="interviewer">Interviewer</option>
-                      <option value="pending">Pending (no access)</option>
-                    </Select>
-                  </div>
-                </td>
+                <td className={`${TD} text-xs`}>{person.role === 'admin' || person.role === 'hr' ? DESK_LABELS[person.desk] : '—'}</td>
+                {isAdmin && (
+                  <td className={TD}>
+                    <div className="flex justify-end gap-1">
+                      <Button size="sm" icon={Pencil} onClick={() => setModal({ kind: 'edit', person })}>{person.role === 'pending' ? 'Give access' : 'Edit'}</Button>
+                      {person.id !== user?.id && (
+                        <Button size="sm" variant="danger" icon={Trash2} onClick={() => setModal({ kind: 'delete', person })}>Delete</Button>
+                      )}
+                    </div>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

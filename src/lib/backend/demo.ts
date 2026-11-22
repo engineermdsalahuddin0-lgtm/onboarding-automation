@@ -225,6 +225,14 @@ function checkAttendance(user: Profile, row: Row, next: Row) {
   }
 }
 
+/** As interview_panels_side_check in schema.sql: HRD or team on the primary interview only. */
+function checkPanelSide(row: Row) {
+  const side = row.side ?? '';
+  if (!['', 'hrd', 'team'].includes(side) || (row.stage !== 'primary' && side !== '')) {
+    throw new BackendError('new row for relation "interview_panels" violates check constraint "interview_panels_side_check"');
+  }
+}
+
 /** An approved correction being applied: it may change its own step's fields on a locked candidate. */
 let activeGrant: { candidateId: string; step: EditStep } | null = null;
 
@@ -533,7 +541,9 @@ export function createDemoBackend(): Backend {
         if (table('interview_panels').some((p) => p.bucket_id === row.bucket_id && p.stage === row.stage && p.interviewer_id === row.interviewer_id)) {
           throw new BackendError('duplicate key value violates unique constraint "interview_panels_bucket_id_stage_interviewer_id_key"');
         }
-        return { id: crypto.randomUUID(), created_at: now, ...row, created_by: demoUser().id };
+        const full: Row = { id: crypto.randomUUID(), created_at: now, side: '', ...row, created_by: demoUser().id };
+        checkPanelSide(full);
+        return full;
       }
       case 'guest_links':
         // As stamp_guest_link in schema.sql: the token is always made here.
@@ -669,6 +679,7 @@ export function createDemoBackend(): Backend {
           }
           notifyChange(row, next);
         }
+        if (name === 'interview_panels') checkPanelSide(next);
         if (name === 'questions') {
           checkQuestion(next);
           next.updated_at = new Date().toISOString();
@@ -716,6 +727,18 @@ export function createDemoBackend(): Backend {
       }
       if (name === 'cv_buckets') {
         for (const child of ['notifications', 'interview_panels', 'guest_links']) state[child] = table(child).filter((row) => !removed.has(row.bucket_id));
+      }
+      if (name === 'profiles') {
+        // As deleting a login: panel seats and notifications go, forms keep the name, handovers go back to the rest.
+        state.interview_panels = table('interview_panels').filter((row) => !removed.has(row.interviewer_id));
+        state.notifications = table('notifications').filter((row) => !removed.has(row.recipient_id));
+        for (const row of table('interview_assessments')) if (removed.has(row.interviewer_id)) row.interviewer_id = null;
+        for (const row of table('edit_requests')) if (removed.has(row.requested_by)) row.requested_by = null;
+        for (const row of table('candidates')) {
+          if (Array.isArray(row.assigned_to) && row.assigned_to.some((id: string) => removed.has(id))) {
+            row.assigned_to = row.assigned_to.filter((id: string) => !removed.has(id));
+          }
+        }
       }
       await persist();
     },

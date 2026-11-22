@@ -25,14 +25,22 @@ const LINE = rgb(0.55, 0.55, 0.55);
 const BAR = rgb(0.2, 0.2, 0.2);
 const SHADE = rgb(0.9, 0.9, 0.9);
 
-interface Fonts {
+export interface Fonts {
   regular: PDFFont;
   bold: PDFFont;
   italic: PDFFont;
 }
 
+export async function embedFonts(doc: PDFDocument): Promise<Fonts> {
+  return {
+    regular: await doc.embedFont(StandardFonts.Helvetica),
+    bold: await doc.embedFont(StandardFonts.HelveticaBold),
+    italic: await doc.embedFont(StandardFonts.HelveticaOblique),
+  };
+}
+
 /** Text the built-in fonts cannot write (Bangla, for one) is drawn by the browser and placed as a picture. */
-class Writer {
+export class Writer {
   constructor(private doc: PDFDocument, private page: PDFPage, private fonts: Fonts) {}
 
   private encodable(font: PDFFont, text: string) {
@@ -53,6 +61,30 @@ class Writer {
     const context = document.createElement('canvas').getContext('2d')!;
     context.font = this.canvasFont(size, bold);
     return context.measureText(text).width / 4;
+  }
+
+  /** How wide a line is at this size. */
+  widthOf(text: string, size: number, bold = false) {
+    return this.measure(text, size, bold ? this.fonts.bold : this.fonts.regular, bold);
+  }
+
+  /** Splits text into lines that fit a width, at most maxLines, the last cut with an ellipsis. */
+  wrap(text: string, size: number, width: number, maxLines: number, bold = false): string[] {
+    const font = bold ? this.fonts.bold : this.fonts.regular;
+    const lines: string[] = [];
+    let current = '';
+    for (const word of text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)) {
+      const next = current ? `${current} ${word}` : word;
+      if (current && this.measure(next, size, font, bold) > width) {
+        lines.push(current);
+        current = word;
+      } else current = next;
+    }
+    if (current) lines.push(current);
+    if (lines.length <= maxLines) return lines;
+    const shown = lines.slice(0, maxLines);
+    shown[maxLines - 1] = `${shown[maxLines - 1]} ${lines.slice(maxLines).join(' ')}`;
+    return shown;
   }
 
   /** One line at a baseline, made smaller and then cut short if it does not fit. */
@@ -292,28 +324,35 @@ async function drawPage(doc: PDFDocument, fonts: Fonts, item: PrintableAssessmen
 export async function assessmentPdf(items: PrintableAssessment[]): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   doc.setTitle(items.length === 1 ? `Interview Assessment - ${items[0].header.candidateName}` : 'Interview Assessments');
-  const fonts: Fonts = {
-    regular: await doc.embedFont(StandardFonts.Helvetica),
-    bold: await doc.embedFont(StandardFonts.HelveticaBold),
-    italic: await doc.embedFont(StandardFonts.HelveticaOblique),
-  };
+  const fonts = await embedFonts(doc);
   for (const item of items) await drawPage(doc, fonts, item);
   return doc.save();
 }
 
+/** A file name without the characters Windows does not allow. */
+export const safeFileName = (name: string) => name.replace(/[\\/:*?"<>|]+/g, ' ');
+
 const fileName = (items: PrintableAssessment[]) => {
   const first = items[0];
   const who = items.length === 1 ? ` - ${first.assessment.interviewer_name}` : '';
-  return `Interview Assessment - ${first.header.candidateName} - ${STAGE_LABEL[first.header.stage]}${who}.pdf`.replace(/[\\/:*?"<>|]+/g, ' ');
+  return safeFileName(`Interview Assessment - ${first.header.candidateName} - ${STAGE_LABEL[first.header.stage]}${who}.pdf`);
 };
 
 const blobOf = (bytes: Uint8Array) => new Blob([bytes as BlobPart], { type: 'application/pdf' });
 
 export async function downloadAssessments(items: PrintableAssessment[]) {
-  const url = URL.createObjectURL(blobOf(await assessmentPdf(items)));
+  savePdf(await assessmentPdf(items), fileName(items));
+}
+
+export async function printAssessments(items: PrintableAssessment[]) {
+  printPdf(await assessmentPdf(items));
+}
+
+export function savePdf(bytes: Uint8Array, name: string) {
+  const url = URL.createObjectURL(blobOf(bytes));
   const link = document.createElement('a');
   link.href = url;
-  link.download = fileName(items);
+  link.download = name;
   document.body.append(link);
   link.click();
   link.remove();
@@ -321,8 +360,8 @@ export async function downloadAssessments(items: PrintableAssessment[]) {
 }
 
 /** Opens the printer dialog for the PDF. Where a browser cannot print a PDF in place, it opens in a new tab. */
-export async function printAssessments(items: PrintableAssessment[]) {
-  const url = URL.createObjectURL(blobOf(await assessmentPdf(items)));
+export function printPdf(bytes: Uint8Array) {
+  const url = URL.createObjectURL(blobOf(bytes));
   const frame = document.createElement('iframe');
   frame.style.position = 'fixed';
   frame.style.width = '0';

@@ -1,8 +1,9 @@
-import { CalendarPlus, Copy, Pencil, Trash2, UserMinus, UserPlus, Users, X } from 'lucide-react';
+import { CalendarPlus, Copy, Pencil, Trash2, UserPlus, Users, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AssignInterviewDialog, EditInterviewerDialog, NewInterviewerDialog, type InterviewerPrefill } from '../components/InterviewerDialogs';
 import { copyText } from '../components/PipelineDialogs';
-import { Avatar, Button, Confirm, EmptyState, errorText, IconButton, PageHeader, StatusBadge, TABLE, Tabs, TD, TH, THEAD, useToast } from '../components/ui';
+import { DeleteUserDialog } from '../components/UserDialogs';
+import { Avatar, Button, EmptyState, errorText, IconButton, PageHeader, StatusBadge, TABLE, Tabs, TD, TH, THEAD, useToast } from '../components/ui';
 import { guestLinkUrl, isFilled, STAGE_SHORT, todayBd } from '../lib/assessment';
 import { dateDmy } from '../lib/format';
 import { useStore } from '../lib/store';
@@ -16,7 +17,7 @@ type Tab = 'interviewers' | 'guests' | 'links';
  * the guests who marked through a link, and the guest links themselves.
  */
 export function InterviewersPage() {
-  const { team, panels, assessments, guestLinks, buckets, isAdmin, canWrite, removeFromPanel, removeGuestLink, updateProfile } = useStore();
+  const { team, panels, assessments, guestLinks, buckets, isAdmin, canWrite, removeFromPanel, removeGuestLink } = useStore();
   const toast = useToast();
   const [tab, setTab] = useState<Tab>('interviewers');
   const [modal, setModal] = useState<
@@ -146,7 +147,7 @@ export function InterviewersPage() {
                           {canWrite && <Button size="sm" icon={CalendarPlus} onClick={() => setModal({ kind: 'assign', person })}>Assign</Button>}
                           {isAdmin && <IconButton label={`Edit ${personName(person)}`} icon={Pencil} onClick={() => setModal({ kind: 'edit', person })} />}
                           {isAdmin && person.role === 'interviewer' && (
-                            <IconButton label={`Remove ${personName(person)}'s access`} icon={UserMinus} onClick={() => setModal({ kind: 'remove', person })} />
+                            <IconButton label={`Delete ${personName(person)} or remove their access`} icon={Trash2} onClick={() => setModal({ kind: 'remove', person })} />
                           )}
                         </div>
                       </td>
@@ -243,23 +244,7 @@ export function InterviewersPage() {
       {modal?.kind === 'add' && <NewInterviewerDialog initial={modal.initial} onClose={() => setModal(null)} />}
       {modal?.kind === 'edit' && <EditInterviewerDialog person={modal.person} onClose={() => setModal(null)} />}
       {modal?.kind === 'assign' && <AssignInterviewDialog person={modal.person} onClose={() => setModal(null)} />}
-      {modal?.kind === 'remove' && (
-        <Confirm
-          title={`Remove ${personName(modal.person)}'s access?`}
-          body="They can no longer sign in to mark interviews, and are taken off every panel. The forms they already marked stay. You can give access back under Settings > Team."
-          confirmLabel="Remove access"
-          danger
-          onCancel={() => setModal(null)}
-          onConfirm={async () => {
-            const person = modal.person;
-            await run(async () => {
-              for (const m of panels.filter((p) => p.interviewer_id === person.id)) await removeFromPanel(m.id);
-              await updateProfile(person.id, { role: 'pending' });
-            }, `${personName(person)} can no longer sign in to mark interviews.`);
-            setModal(null);
-          }}
-        />
-      )}
+      {modal?.kind === 'remove' && <DeleteUserDialog person={modal.person} onClose={() => setModal(null)} />}
     </>
   );
 }

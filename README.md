@@ -24,7 +24,8 @@ build refuses to run without a database.
    tables, security rules, public form functions and private file storage. It is safe to run again after an update,
    and an update that changes the database needs exactly that: paste it and run it again.
 3. Copy `.env.example` to `.env` and fill in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`
-   from **Project Settings > API**. To save the AI key from inside the app, also set `SUPABASE_SERVICE_ROLE_KEY`.
+   from **Project Settings > API**. To save the AI key from inside the app, and to add, change or delete users
+   from **Settings > Team**, also set `SUPABASE_SERVICE_ROLE_KEY`.
    This key bypasses all security rules: keep it on the server and never give it a `VITE_` prefix.
 4. In **Authentication > Providers > Email**, turn off **Allow new users to sign up**. Accounts that do sign up
    still see nothing until approved, but there is no reason to allow it.
@@ -60,8 +61,11 @@ only a mark from 1 to 5 for each of the 10 areas, optional strengths and weaknes
 signature; the candidate, position, unit, department, interviewer and date are filled in, and the obtained score (out of 50),
 average and percentage work themselves out. An area left empty counts as 0; a form left wholly empty is not counted.
 
-- **Interviewers**: an admin adds them under **Settings > Team > Add interviewer** (email and password; this needs
-  `SUPABASE_SERVICE_ROLE_KEY` on the server), or creates the user in Supabase and picks the Interviewer role. Each one saves
+- **Users**: an admin adds anyone (Admin, HR, Viewer or Interviewer) under **Settings > Team > Add user**, with an
+  email and password, and changes or deletes them with the buttons on their row: details, role, desk, login email,
+  a new password. Deleting keeps what the person did on record under their name; "Only remove access" keeps the
+  account as Pending instead. This needs `SUPABASE_SERVICE_ROLE_KEY` on the server.
+- **Interviewers**: added the same way, or from the **Interviewers** page. Each one saves
   their details and signature once, and the signature goes on every form they mark.
 - **Who interviews whom**: on a CV bucket, the **Interview panel** button puts interviewers on its primary or final
   interview. An interviewer sees only those candidates, from the day their interview is scheduled. Staff on a panel get
@@ -124,7 +128,7 @@ Supabase steps 1, 2, 4 and 5 above still apply; step 6 is replaced by this.
    |---|---|---|
    | `VITE_SUPABASE_URL` | Supabase > Project Settings > API > Project URL | Yes |
    | `VITE_SUPABASE_ANON_KEY` | Same page, the `anon` `public` key | Yes |
-   | `SUPABASE_SERVICE_ROLE_KEY` | Same page, the `service_role` key. Server only | To save the AI key from Settings |
+   | `SUPABASE_SERVICE_ROLE_KEY` | Same page, the `service_role` key. Server only | To save the AI key from Settings, and to add, change or delete users |
    | `GEMINI_API_KEY` | A Google AI Studio key | Only if you do not save it in Settings |
    | `GEMINI_MODEL` | Defaults to `gemini-3.8-flash` | No |
 

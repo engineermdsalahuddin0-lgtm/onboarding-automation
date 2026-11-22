@@ -775,6 +775,22 @@ describe('desks and notifications', () => {
     const posting = (await inbox(MILI)).find((n) => n.event === 'posting');
     expect(posting).toMatchObject({ actor_name: 'Tareq Azij', detail: 'BDJobs', designation: 'Jr. Executive', bucket_id: bucket });
   });
+
+  // Last in this group: Mili is gone after it.
+  it('deletes a user and keeps what they did, with their candidates going back to the others', async () => {
+    const id = async (name: string) => (await as(TAREQ, `select id from candidates where full_name = $1 and bucket_id = $2`, [name, bucket]))[0].id;
+    const [a, c] = [await id('A'), await id('C')];
+    await as(MILI, `select request_edit($1, 'call', 'Wrong call date')`, [a]);
+    // Only the server, with the service role, releases a person's handovers.
+    await expect(as(ADMIN, `select release_handovers($1)`, [MILI])).rejects.toThrow(/permission denied/);
+    // As the server does: release the handovers, then delete the login.
+    await db.query(`select public.release_handovers($1)`, [MILI]);
+    await db.query(`delete from auth.users where id = $1`, [MILI]);
+    const after = await as<any>(TAREQ, `select full_name, assigned_to from candidates where id in ($1, $2) order by full_name`, [a, c]);
+    expect(after).toEqual([{ full_name: 'A', assigned_to: [] }, { full_name: 'C', assigned_to: [NAFIS] }]);
+    expect(await as(ADMIN, `select requested_by, requested_by_name from edit_requests where candidate_id = $1`, [a])).toEqual([{ requested_by: null, requested_by_name: 'Mili' }]);
+    expect(await as(ADMIN, `select id from profiles where id = $1`, [MILI])).toEqual([]);
+  });
 });
 
 describe('corrections approved by an admin', () => {
@@ -957,6 +973,15 @@ describe('interview assessment forms', () => {
     await expect(as(MIZAN, `insert into interview_panels (bucket_id, stage, interviewer_id) values ($1, 'secondary', $2)`, [bucket, MIZAN])).rejects.toThrow(/row-level security/);
     await expect(as(HR, `insert into interview_panels (bucket_id, stage, interviewer_id) values ($1, 'secondary', $2)`, [bucket, VIEWER])).rejects.toThrow(/Only interviewer and staff/);
     await expect(as(MIZAN, `insert into interview_assessments (candidate_id, stage, interviewer_key) values ($1, 'primary', 'x')`, [scheduled])).rejects.toThrow(/permission denied/);
+  });
+
+  it('lets HR say whether a primary interviewer sits for HRD or the team, and nothing else on a panel seat', async () => {
+    const [seat] = await as(HR, `update interview_panels set side = 'hrd' where bucket_id = $1 and interviewer_id = $2 returning side`, [bucket, MIZAN]);
+    expect(seat.side).toBe('hrd');
+    await expect(as(HR, `update interview_panels set side = 'boss' where bucket_id = $1`, [bucket])).rejects.toThrow(/interview_panels_side_check/);
+    await expect(as(HR, `insert into interview_panels (bucket_id, stage, interviewer_id, side) values ($1, 'secondary', $2, 'team')`, [bucket, OTHER])).rejects.toThrow(/interview_panels_side_check/);
+    await expect(as(HR, `update interview_panels set stage = 'secondary' where bucket_id = $1`, [bucket])).rejects.toThrow(/permission denied/);
+    expect(await as(MIZAN, `update interview_panels set side = 'team' returning id`)).toEqual([]);
   });
 
   it("shows an interviewer only their panel's scheduled candidates", async () => {

@@ -499,12 +499,14 @@ export function buildDemoData() {
     },
   ];
 
-  // The demo interviewer sits on both interviews of the first two buckets; Tareq also on the second bucket's primary.
+  // The demo interviewer (HR & Admin) sits on both interviews of the first two buckets, for HRD at the primary;
+  // Tareq sits for the team at the second bucket's primary.
   const interview_panels: InterviewPanelMember[] = [
-    ['bkt-1', 'primary', DEMO_PEOPLE.interviewer], ['bkt-1', 'secondary', DEMO_PEOPLE.interviewer],
-    ['bkt-2', 'primary', DEMO_PEOPLE.interviewer], ['bkt-2', 'secondary', DEMO_PEOPLE.interviewer], ['bkt-2', 'primary', DEMO_PEOPLE.agm],
-  ].map(([bucketId, stage, interviewerId], index) => ({
-    id: `panel-${index + 1}`, bucket_id: bucketId, stage: stage as InterviewPanelMember['stage'], interviewer_id: interviewerId, created_at: stamp(-5),
+    ['bkt-1', 'primary', DEMO_PEOPLE.interviewer, 'hrd'], ['bkt-1', 'secondary', DEMO_PEOPLE.interviewer, ''],
+    ['bkt-2', 'primary', DEMO_PEOPLE.interviewer, 'hrd'], ['bkt-2', 'secondary', DEMO_PEOPLE.interviewer, ''], ['bkt-2', 'primary', DEMO_PEOPLE.agm, 'team'],
+  ].map(([bucketId, stage, interviewerId, side], index) => ({
+    id: `panel-${index + 1}`, bucket_id: bucketId, stage: stage as InterviewPanelMember['stage'], interviewer_id: interviewerId,
+    side: side as InterviewPanelMember['side'], created_at: stamp(-5),
   }));
   // One filled form, the marks of the paper form the company uses: 23 out of 50.
   const interview_assessments: InterviewAssessment[] = [{

@@ -521,12 +521,20 @@ export interface Question {
 
 export type InterviewStage = 'primary' | 'secondary';
 
+/**
+ * Which side a primary interviewer sits for: HRD, or the team (the department that asked for the post).
+ * It decides their column on the primary selection report. Blank on the final interview.
+ */
+export type PanelSide = '' | 'hrd' | 'team';
+
 /** One interviewer on one bucket's primary or final interview. */
 export interface InterviewPanelMember {
   id: string;
   bucket_id: string;
   stage: InterviewStage;
   interviewer_id: string;
+  /** Missing on rows saved before sides existed. */
+  side?: PanelSide;
   created_at: string;
 }
 

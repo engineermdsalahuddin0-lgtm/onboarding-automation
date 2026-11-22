@@ -8,6 +8,7 @@ import { BucketFlowCard } from '../components/BucketFlow';
 import { HelpTip } from '../components/Guide';
 import { HandoverDialog } from '../components/HandoverDialog';
 import { InterviewPanelDialog } from '../components/InterviewPanel';
+import { FinalListBanner, SelectionReportDialog } from '../components/SelectionReport';
 import { RejectionDetails, RoundDetails, useRound } from '../components/InterviewSummary';
 import { ConfirmCallsDialog, copyText, MissedDialog, NewDateDialog, ScheduleDialog, ScreeningRejectDialog } from '../components/PipelineDialogs';
 import { ProcessMini } from '../components/ProcessBar';
@@ -19,6 +20,7 @@ import { candidateSalary, commonAreas, genderOf, hasFilters, INDUSTRY_NOT_STATED
 import { ageYears, classNames, dateMedium, duration, money, todayIso, whenText } from '../lib/format';
 import { placeText } from '../lib/org';
 import { bucketStats, can, interviewDay, CATEGORY_LABELS, isRejected, matchesStageFilter, nextAction, normalizePhone, processPosition, recommendationCount, rejectScreening, shortlist, stageOf, type StageFilter } from '../lib/pipeline';
+import { SIDE_LABEL } from '../lib/selectionReport';
 import { useFileUrls, useStore } from '../lib/store';
 import { handlerNames, personName, processTeam } from '../lib/team';
 import type { Candidate, Profile } from '../types';
@@ -37,7 +39,8 @@ type Modal =
   | { kind: 'upload' }
   | { kind: 'edit' }
   | { kind: 'delete' }
-  | { kind: 'panel' };
+  | { kind: 'panel' }
+  | { kind: 'report' };
 
 const STAGES: { value: StageFilter; label: string; help: string; action?: string; short?: string }[] = [
   { value: 'all', label: 'All', help: 'Everyone in this bucket. Click a row to open the candidate\'s card and move them to the next step.' },
@@ -551,7 +554,9 @@ export function BucketDetailPage() {
       <section className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border border-line bg-surface px-3 py-2 text-sm">
         <h2 className="text-xs font-semibold text-ink-soft">Interviewers</h2>
         {([['Primary interview', 'primary'], ['Final interview', 'secondary']] as const).map(([label, stage]) => {
-          const members = panels.filter((p) => p.bucket_id === bucket.id && p.stage === stage).map((p) => personName(team.find((t) => t.id === p.interviewer_id)));
+          const members = panels
+            .filter((p) => p.bucket_id === bucket.id && p.stage === stage)
+            .map((p) => `${personName(team.find((t) => t.id === p.interviewer_id))}${p.side ? ` (${SIDE_LABEL[p.side]})` : ''}`);
           return (
             <span key={stage} className="min-w-0">
               <span className="text-ink-soft">{label}: </span>
@@ -570,6 +575,9 @@ export function BucketDetailPage() {
           );
         })()}
       </section>
+
+      {/* Ready for the final interview: the list for the board, where nobody can miss it. */}
+      <FinalListBanner bucket={bucket} onOpen={() => setModal({ kind: 'report' })} />
 
       <BucketFlowCard
         steps={flowSteps}
@@ -866,6 +874,7 @@ export function BucketDetailPage() {
       {modal?.kind === 'edit' && <BucketFormDialog bucket={bucket} onClose={() => setModal(null)} />}
       {modal?.kind === 'delete' && <DeleteBucketDialog bucket={bucket} onClose={() => setModal(null)} />}
       {modal?.kind === 'panel' && <InterviewPanelDialog bucket={bucket} onClose={() => setModal(null)} />}
+      {modal?.kind === 'report' && <SelectionReportDialog bucket={bucket} onClose={() => setModal(null)} />}
     </>
   );
 }

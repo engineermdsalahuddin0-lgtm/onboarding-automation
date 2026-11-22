@@ -2,9 +2,10 @@ import { CalendarPlus, Check, UserPlus } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { STAGE_LABEL } from '../lib/assessment';
 import { backend } from '../lib/backend';
+import { guessSide } from '../lib/selectionReport';
 import { useStore } from '../lib/store';
 import { personName } from '../lib/team';
-import type { InterviewStage, Profile } from '../types';
+import type { InterviewStage, PanelSide, Profile } from '../types';
 import { SignaturePad } from './SignaturePad';
 import { Button, Dialog, errorText, Select, TextInput, useToast } from './ui';
 
@@ -79,9 +80,9 @@ export function NewInterviewerDialog({ initial, onClose, onDone }: { initial?: I
 
 /** An admin changes an interviewer's details, and can save their signature for them, e.g. from a signed paper. */
 export function EditInterviewerDialog({ person, onClose }: { person: Profile; onClose: () => void }) {
-  const { updateProfile } = useStore();
+  const { updateProfile, saveUser } = useStore();
   const toast = useToast();
-  const [form, setForm] = useState({ full_name: person.full_name ?? '', job_title: person.job_title, department: person.department ?? '' });
+  const [form, setForm] = useState({ full_name: person.full_name ?? '', job_title: person.job_title, department: person.department ?? '', email: person.email ?? '', password: '' });
   const [signature, setSignature] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -89,10 +90,11 @@ export function EditInterviewerDialog({ person, onClose }: { person: Profile; on
     event.preventDefault();
     setBusy(true);
     try {
-      await updateProfile(person.id, {
-        full_name: form.full_name.trim(), job_title: form.job_title.trim(), department: form.department.trim(),
-        ...(signature !== null ? { signature } : {}),
+      await saveUser(person.id, {
+        full_name: form.full_name.trim(), job_title: form.job_title.trim(), department: form.department.trim(), email: form.email.trim(),
+        ...(form.password ? { password: form.password } : {}),
       });
+      if (signature !== null) await updateProfile(person.id, { signature });
       toast(`${form.full_name.trim() || 'Interviewer'}: saved.`);
       onClose();
     } catch (error) {
@@ -119,7 +121,18 @@ export function EditInterviewerDialog({ person, onClose }: { person: Profile; on
           <TextInput label="Designation" value={form.job_title} onChange={(e) => setForm({ ...form, job_title: e.target.value })} />
           <TextInput label="Department" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} />
         </div>
-        <TextInput label="Email (login ID)" disabled value={person.email ?? ''} hint="The login cannot be changed here. A forgotten password is reset in Supabase." />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <TextInput label="Email (login ID)" type="email" required autoComplete="off" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          <TextInput
+            label="New password"
+            type="text"
+            minLength={form.password && backend.mode !== 'demo' ? 8 : undefined}
+            autoComplete="new-password"
+            hint="Only to change it, e.g. when they forgot it."
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+          />
+        </div>
         <SignaturePad label="Saved signature" saved={person.signature || undefined} value={signature ?? ''} onChange={setSignature} />
       </form>
     </Dialog>
@@ -132,6 +145,7 @@ export function AssignInterviewDialog({ person, onClose }: { person: Profile; on
   const toast = useToast();
   const [bucketId, setBucketId] = useState('');
   const [stage, setStage] = useState<InterviewStage>('primary');
+  const [side, setSide] = useState<Exclude<PanelSide, ''>>(() => guessSide(person.department));
   const [busy, setBusy] = useState(false);
   const open = buckets.filter((b) => b.status !== 'Archived');
   const already = panels.some((p) => p.bucket_id === bucketId && p.stage === stage && p.interviewer_id === person.id);
@@ -140,7 +154,7 @@ export function AssignInterviewDialog({ person, onClose }: { person: Profile; on
     event.preventDefault();
     setBusy(true);
     try {
-      await addToPanel(bucketId, stage, person.id);
+      await addToPanel(bucketId, stage, person.id, side);
       toast(`${personName(person)} is on the ${STAGE_LABEL[stage].toLowerCase()} for ${buckets.find((b) => b.id === bucketId)?.designation}.`);
       onClose();
     } catch (error) {
@@ -170,6 +184,12 @@ export function AssignInterviewDialog({ person, onClose }: { person: Profile; on
           <option value="primary">{STAGE_LABEL.primary}</option>
           <option value="secondary">{STAGE_LABEL.secondary}</option>
         </Select>
+        {stage === 'primary' && (
+          <Select label="Sits for" hint="Their column on the primary selection report." value={side} onChange={(e) => setSide(e.target.value as Exclude<PanelSide, ''>)}>
+            <option value="hrd">HRD</option>
+            <option value="team">Team (the department)</option>
+          </Select>
+        )}
         {already && <p className="text-sm text-amber-900">Already on this interview.</p>}
       </form>
     </Dialog>

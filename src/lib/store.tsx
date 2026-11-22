@@ -4,6 +4,7 @@ import type {
   Candidate,
   CandidateReview,
   CvBucket,
+  Desk,
   Designation,
   DocumentTemplate,
   AssessmentInput,
@@ -15,15 +16,30 @@ import type {
   InterviewStage,
   JobPosting,
   MessageTemplate,
+  PanelSide,
   Profile,
   Question,
   Requisition,
+  Role,
   Settings,
 } from '../types';
 import { backend, type TableName } from './backend';
 import { DEFAULT_DOCUMENT_TEMPLATES, DEFAULT_MESSAGE_TEMPLATES, DEFAULT_SETTINGS } from './defaults';
 import { DEFAULT_ORG_STRUCTURE } from './org';
 import { canProcessAs, canScreenAs } from './team';
+
+/** Calls the server's user-account routes, which need the service role key. Admins only. */
+async function teamApi(method: 'POST' | 'PATCH' | 'DELETE', path: string, body: unknown, fallback: string) {
+  const token = await backend.accessToken();
+  const response = await fetch(path, {
+    method,
+    headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.message || fallback);
+  return result as { profile: Profile; ok?: boolean };
+}
 
 /** The latest notifications kept in memory; older ones stay in the database. */
 const NOTIFICATION_LIMIT = 100;
@@ -93,6 +109,14 @@ export interface NewInterviewer {
   job_title: string;
   department: string;
 }
+
+export interface NewUser extends NewInterviewer {
+  role: Role;
+  desk: Desk;
+}
+
+/** What an admin changes on an account. A password is set only when given; it is never read back. */
+export type UserChanges = Partial<Pick<Profile, 'full_name' | 'job_title' | 'department' | 'role' | 'desk'>> & { email?: string; password?: string };
 
 const EMPTY: Data = {
   settings: { ...DEFAULT_SETTINGS, id: 1 },
@@ -168,8 +192,10 @@ interface StoreValue extends Data {
   applyEdit: (requestId: string, changes: Partial<Candidate>) => Promise<void>;
 
   /** Puts an interviewer on a bucket's primary or final interview, or takes them off. */
-  addToPanel: (bucketId: string, stage: InterviewStage, interviewerId: string) => Promise<void>;
+  addToPanel: (bucketId: string, stage: InterviewStage, interviewerId: string, side?: PanelSide) => Promise<void>;
   removeFromPanel: (panelId: string) => Promise<void>;
+  /** Whether a primary interviewer sits for HRD or the team. */
+  setPanelSide: (panelId: string, side: PanelSide) => Promise<void>;
   /** Makes a link for guest interviewers, working on that day only. */
   createGuestLink: (bucketId: string, stage: InterviewStage, validOn: string) => Promise<GuestLink>;
   removeGuestLink: (linkId: string) => Promise<void>;
@@ -183,6 +209,12 @@ interface StoreValue extends Data {
   createInterviewer: (person: NewInterviewer) => Promise<Profile>;
   /** Admins only: changes someone's details, role or saved signature. */
   updateProfile: (id: string, patch: Partial<Profile>) => Promise<Profile>;
+  /** Admins only: a new login with any role. */
+  createUser: (person: NewUser) => Promise<Profile>;
+  /** Admins only: details, role, desk, and the login email or password. */
+  saveUser: (id: string, changes: UserChanges) => Promise<Profile>;
+  /** Admins only: deletes the login. What the person did stays on record under their name. */
+  deleteUser: (id: string) => Promise<void>;
   refreshAssessments: () => Promise<void>;
 }
 
@@ -435,8 +467,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setData((state) => ({ ...state, assessments }));
   }, []);
 
-  const addToPanel = useCallback(async (bucketId: string, stage: InterviewStage, interviewerId: string) => {
-    const [row] = await backend.insert<InterviewPanelMember>('interview_panels', [{ bucket_id: bucketId, stage, interviewer_id: interviewerId }]);
+  const addToPanel = useCallback(async (bucketId: string, stage: InterviewStage, interviewerId: string, side: PanelSide = '') => {
+    const [row] = await backend.insert<InterviewPanelMember>('interview_panels', [
+      { bucket_id: bucketId, stage, interviewer_id: interviewerId, side: stage === 'primary' ? side : '' },
+    ]);
     if (!row) throw new Error('The panel could not be changed. You may not have permission.');
     setData((state) => ({ ...state, panels: [...state.panels, row] }));
   }, []);
@@ -444,6 +478,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const removeFromPanel = useCallback(async (panelId: string) => {
     await backend.remove('interview_panels', { id: panelId });
     setData((state) => ({ ...state, panels: state.panels.filter((p) => p.id !== panelId) }));
+  }, []);
+
+  const setPanelSide = useCallback(async (panelId: string, side: PanelSide) => {
+    const [row] = await backend.update<InterviewPanelMember>('interview_panels', { id: panelId }, { side });
+    if (!row) throw new Error('The panel could not be changed. You may not have permission.');
+    setData((state) => ({ ...state, panels: state.panels.map((p) => (p.id === panelId ? row : p)) }));
   }, []);
 
   const createGuestLink = useCallback(async (bucketId: string, stage: InterviewStage, validOn: string) => {
@@ -491,27 +531,54 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setData((state) => ({ ...state, assessments: state.assessments.filter((a) => a.id !== assessmentId) }));
   }, []);
 
-  const createInterviewer = useCallback(async (person: NewInterviewer) => {
+  const createUser = useCallback(async (person: NewUser) => {
     let profile: Profile;
     if (backend.mode === 'demo') {
+      const email = person.email.trim().toLowerCase();
+      if (data.team.some((p) => p.email?.toLowerCase() === email)) throw new Error('Someone already signs in with this email.');
       [profile] = await backend.insert<Profile>('profiles', [{
-        email: person.email.trim(), full_name: person.full_name.trim(), job_title: person.job_title.trim(), department: person.department.trim(),
-        role: 'interviewer', desk: 'all', signature: '',
+        email, full_name: person.full_name.trim(), job_title: person.job_title.trim(), department: person.department.trim(),
+        role: person.role, desk: person.desk, signature: '',
       }]);
     } else {
-      const token = await backend.accessToken();
-      const response = await fetch('/api/team/interviewers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify(person),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.message || 'The account could not be made.');
-      profile = body.profile as Profile;
+      profile = (await teamApi('POST', '/api/team/users', person, 'The account could not be made.')).profile;
     }
     setData((state) => ({ ...state, team: replaceById(state.team, profile) }));
     return profile;
-  }, []);
+  }, [data.team]);
+
+  const createInterviewer = useCallback(
+    (person: NewInterviewer) => createUser({ ...person, role: 'interviewer', desk: 'all' }),
+    [createUser],
+  );
+
+  const saveUser = useCallback(async (id: string, changes: UserChanges) => {
+    let profile: Profile;
+    if (backend.mode === 'demo') {
+      // Demo accounts have no password: the email alone signs in.
+      const { password: _password, ...patch } = changes;
+      const email = patch.email?.trim().toLowerCase();
+      if (email && data.team.some((p) => p.id !== id && p.email?.toLowerCase() === email)) throw new Error('Someone already signs in with this email.');
+      [profile] = await backend.update<Profile>('profiles', { id }, email ? { ...patch, email } : patch);
+      if (!profile) throw new Error('Only an admin can change accounts.');
+    } else {
+      profile = (await teamApi('PATCH', `/api/team/users/${encodeURIComponent(id)}`, changes, 'The account could not be saved.')).profile;
+    }
+    setData((state) => ({ ...state, team: replaceById(state.team, profile) }));
+    if (id === user?.id) await refreshUser();
+    return profile;
+  }, [data.team, user?.id, refreshUser]);
+
+  const deleteUser = useCallback(async (id: string) => {
+    if (id === user?.id) throw new Error('You cannot delete your own account. Ask another admin.');
+    const person = data.team.find((p) => p.id === id);
+    if (person?.role === 'admin' && data.team.filter((p) => p.role === 'admin').length <= 1) throw new Error('At least one admin account must remain.');
+    if (backend.mode === 'demo') await backend.remove('profiles', { id });
+    else await teamApi('DELETE', `/api/team/users/${encodeURIComponent(id)}`, undefined, 'The account could not be deleted.');
+    // Panels, handovers and forms change with it; load them fresh.
+    setData((state) => ({ ...state, team: state.team.filter((p) => p.id !== id) }));
+    await reload().catch(() => undefined);
+  }, [data.team, user?.id, reload]);
 
   const updateProfile = useCallback(async (id: string, patch: Partial<Profile>) => {
     const [row] = await backend.update<Profile>('profiles', { id }, patch);
@@ -634,6 +701,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       applyEdit,
       addToPanel,
       removeFromPanel,
+      setPanelSide,
       createGuestLink,
       removeGuestLink,
       saveModeratorAssessment,
@@ -641,9 +709,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       removeAssessment,
       createInterviewer,
       updateProfile,
+      createUser,
+      saveUser,
+      deleteUser,
       refreshAssessments,
     }),
-    [data, user, loadingUser, loadingData, loadError, canWrite, lastSave, reload, refreshUser, updateCandidate, updateCandidates, addCandidates, removeCandidate, removeBucket, syncRequisitions, requestEdit, decideEdit, cancelEdit, applyEdit, saveRow, removeRow, merge, logReviewSession, markNotificationsRead, addToPanel, removeFromPanel, createGuestLink, removeGuestLink, saveModeratorAssessment, signAssessment, removeAssessment, createInterviewer, updateProfile, refreshAssessments],
+    [data, user, loadingUser, loadingData, loadError, canWrite, lastSave, reload, refreshUser, updateCandidate, updateCandidates, addCandidates, removeCandidate, removeBucket, syncRequisitions, requestEdit, decideEdit, cancelEdit, applyEdit, saveRow, removeRow, merge, logReviewSession, markNotificationsRead, addToPanel, removeFromPanel, setPanelSide, createGuestLink, removeGuestLink, saveModeratorAssessment, signAssessment, removeAssessment, createInterviewer, updateProfile, createUser, saveUser, deleteUser, refreshAssessments],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
