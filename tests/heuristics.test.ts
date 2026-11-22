@@ -380,3 +380,132 @@ describe('normalizeDate', () => {
     expect(normalizeDate('sometime in 1996')).toBeNull();
   });
 });
+
+
+// Patterns found in a batch of real CVs that the reader missed (names, details and places below are made up).
+describe('layouts that used to lose the name, email or education', () => {
+  it('keeps degree lines ending in a colon, or in capitals, inside the education section', () => {
+    const cv = parseCvText(`Rafiq Ahmed
+Mobile: 01711000001
+ACADEMIC QUALIFICATION:
+Bachelor of Business Administration:
+Institution    : Sample College
+Group : Management
+Result : 2.62
+Passing Year : 2014
+Secondary School Certificate (S.S.C):
+Institution : Sample Govt. High School under Dhaka Board
+Group : Commerce
+Result : 4.31
+Passing Year : 2007
+MASTERS OF SCIENCE
+Chemistry - Sample Govt. College, Sampleganj    2009
+Result : 2 Class
+PERSONAL INFO:
+Name : Rafiq Ahmed`);
+    expect(cv.education).toEqual([
+      { degree: 'Bachelor of Business Administration (Management)', institution: 'Sample College', result: '2.62', year: '2014' },
+      { degree: 'Secondary School Certificate (S.S.C) (Commerce)', institution: 'Sample Govt. High School', board: 'Dhaka Board', result: '4.31', year: '2007' },
+      { degree: 'MASTERS OF SCIENCE', institution: 'Sample Govt. College', result: '2 Class', year: '2009' },
+    ]);
+  });
+
+  it('reads labelled entries whose label names the degree, and does not start one at "Graduate College"', () => {
+    const cv = parseCvText(`Rafiq Ahmed
+ACCADEMIC QUALIFCATION
+B.A.(HON'S):
+Institution    : Sample Govt. Graduate College, Rangpur
+Passing year    :3rd Year Continue
+Programs    : Higher Secondary School Certificate (HSC).
+Result    : GPA: 4.67 (out of 5.00).
+Instution    : Sample School & College.
+Board    : Dinajpur.
+Year of Passing    : 2023`);
+    expect(cv.education).toHaveLength(2);
+    expect(cv.education[0]).toMatchObject({ degree: "B.A.(HON'S)", institution: 'Sample Govt. Graduate College, Rangpur', result: '3rd Year Continue' });
+    expect(cv.education[1]).toMatchObject({ institution: 'Sample School & College', board: 'Dinajpur', year: '2023', result: 'GPA: 4.67 (out of 5.00)' });
+  });
+
+  it('reads headings that lost or scattered their spaces, or are misspelt', () => {
+    for (const heading of ['E D U C A T I O N', 'EDU C A TION', 'EducationalQualification:', 'ACCADEMIC QUALIFCATION']) {
+      const cv = parseCvText(`Rafiq Ahmed\n${heading}\nB.Sc. in Textile Engineering\nSample University\n2014-2018`);
+      expect(cv.education, heading).toEqual([{ degree: 'B.Sc. in Textile Engineering', institution: 'Sample University', year: '2018' }]);
+    }
+    expect(parseCvText('Rafiq Ahmed\nWorkingExperience:\nCompany : Sample Knit Ltd.\nDesignation : Accounts Officer').experience)
+      .toEqual([expect.objectContaining({ company: 'Sample Knit Ltd', role: 'Accounts Officer' })]);
+  });
+
+  it('finds an education table with no heading, and keeps the year out of the result', () => {
+    const cv = parseCvText(`Rafiq Ahmed
+Email: rafiq@example.com
+Exam Title    Concentration/ Major    Institute    Result    Pas. Year    Duration
+BSC    Apparels    The people's university of    3.26 out of    2021    3.4 Years
+manufacturing &    Bangladesh,Dhaka    4.00
+DIPLOMA    Garments design and BCMC college of Engineering &    3.51Out of 4.00    2015    4 Years`);
+    expect(cv.education[0]).toMatchObject({ degree: 'BSC Apparels', institution: "The people's university of Bangladesh,Dhaka", result: '3.26', year: '2021' });
+    expect(cv.education[1]).toMatchObject({ degree: 'DIPLOMA', institution: 'BCMC college of Engineering', year: '2015' });
+  });
+
+  it('reads an education list that shares its lines with another column', () => {
+    const cv = parseCvText(`Rafiq Ahmed
+Educational Background:        Prepare technical reports and communicate issues.
+2012 Bachelor of Business Administration (BBA)
+Sample Bangladesh University    Training Summary:
+2008 Higher Secondary School Certificate (HSC)     Basic Computer Education– Sample IT Institute
+Sample Ahmed College     Garments Technician Training
+References:    Professional Qualification:`);
+    expect(cv.education).toEqual([
+      { degree: 'Bachelor of Business Administration (BBA)', institution: 'Sample Bangladesh University', year: '2012' },
+      { degree: 'Higher Secondary School Certificate (HSC)', institution: 'Sample Ahmed College', year: '2008' },
+    ]);
+  });
+
+  it('does not take labels, sentences, job titles or the file name as the name', () => {
+    expect(parseCvText('Resume : S.M.KARIM\nS.M.KARIM(Textile Engineer)\nContact Me\n01711000002').full_name).toBe('S.M.Karim');
+    expect(parseCvText('Address: Savar, Dhaka\nMobile No: 01711000003\ncapable of working with the British &\nbuying concerns.').full_name).toBe('');
+    expect(parseCvText('SENIOR TECNICAL QA\nPhone: 01711000004', 'name_not_found.pdf').full_name).toBe('');
+    expect(parseCvText('Technology\nPhone: 01711000004').full_name).toBe('');
+    // A lower-case file name can still be the name.
+    expect(parseCvText('Phone: 01711000004', 'rafiq ahmed.pdf').full_name).toBe('Rafiq Ahmed');
+  });
+
+  it("finds the applicant's name and contacts in the sign-off after the references", () => {
+    const cv = parseCvText(`CAREER SUMMARY:
+I am working as an Assistant Manager.
+REFERENCE:
+Karim Hossain
+AGM, Sample Companies
+Phone: +8801711000005
+I hereby declare that all statements are true.
+Best Regards,
+Rafiq Ahmed
+ENGR.RAFIQ AHMED
+Mobile No: +8801711000006
+E-mail: rafiq.ahmed@example.com`);
+    expect(cv).toMatchObject({ full_name: 'Rafiq Ahmed', phone: '01711000006', email: 'rafiq.ahmed@example.com' });
+    expect(cv.references_list).toEqual([expect.objectContaining({ name: 'Karim Hossain' })]);
+  });
+
+  it('prefers the line that matches the email, and strips a label stuck to the email', () => {
+    const cv = parseCvText('PROFILE INFO\nSample text.\nSENIOR QA\nRAFIQ AHMED\nPhone: 01711000007\nEmail-rafiq.qa@example.com');
+    expect(cv.email).toBe('rafiq.qa@example.com');
+    expect(cv.full_name).toBe('Rafiq Ahmed');
+  });
+
+  it('reads labelled jobs, open-ended dates, and a CV printed twice only once', () => {
+    const once = `Rafiq Ahmed
+Job Experience
+Name of Company    :    Sample Co. Ltd.
+Designation    :    Q.A Executive
+Duration    :    March 2020 to Still running.
+Education Qualification
+Diploma in Textile
+Institute    :    Sample Institute of Technology
+Year of Passing    :    2012`;
+    const cv = parseCvText(`${once}\n${once}`);
+    expect(cv.experience).toEqual([{ company: 'Sample Co. Ltd', role: 'Q.A Executive', duration: 'March 2020 to Still running' }]);
+    expect(cv.education).toHaveLength(1);
+    expect(parseCvText('Rafiq Ahmed\nEXPERIENCE\nGarment Technologist (05 November 2024 to Continue)\nSample Woven Ltd').experience[0])
+      .toMatchObject({ company: 'Sample Woven Ltd', duration: '05 November 2024 to Continue' });
+  });
+});

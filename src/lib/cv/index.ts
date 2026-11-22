@@ -134,6 +134,49 @@ export function mergeAiResult(rules: ParsedCv, ai: any, documentText: string): P
   return merged;
 }
 
+/**
+ * What the text layer missed and OCR of the first page may find: a name set as a picture, a sidebar image.
+ * An email alone missing is common (many CVs have none), so it is not worth a few seconds of OCR by itself.
+ */
+export const needsPageOcr = (parsed: ParsedCv) => !parsed.full_name || (!parsed.email && !parsed.phone) || parsed.education.length === 0;
+
+/**
+ * Fills only what the text layer left empty, from the rules run on the first page's OCR. Nothing the text
+ * layer found is replaced: OCR misreads, the text layer does not.
+ */
+export function fillFromPageOcr(parsed: ParsedCv, fromOcr: ParsedCv): ParsedCv {
+  const filled: ParsedCv = { ...parsed, warnings: [...parsed.warnings] };
+  const taken: string[] = [];
+  if (!filled.full_name && fromOcr.full_name) {
+    filled.full_name = fromOcr.full_name;
+    taken.push('name');
+  }
+  if (!filled.email && fromOcr.email) {
+    filled.email = fromOcr.email;
+    taken.push('email');
+  }
+  if (!filled.phone && fromOcr.phone) {
+    filled.phone = fromOcr.phone;
+    filled.alt_phone ||= fromOcr.alt_phone;
+    taken.push('mobile');
+  }
+  if (!filled.linkedin && fromOcr.linkedin) filled.linkedin = fromOcr.linkedin;
+  if (filled.education.length === 0 && fromOcr.education.some((item) => item.institution)) {
+    filled.education = fromOcr.education;
+    taken.push('education');
+  }
+  if (taken.length === 0) return parsed;
+  filled.warnings = filled.warnings.filter((warning) => {
+    if (warning.startsWith('Name not found')) return !filled.full_name;
+    if (warning.startsWith('Mobile number not found')) return !filled.phone;
+    if (warning.startsWith('Email not found')) return !filled.email;
+    if (warning.startsWith('Education could not')) return filled.education.length === 0;
+    return true;
+  });
+  filled.warnings.push(`The ${taken.join(', ')} ${taken.length === 1 ? 'was' : 'were'} read from the page image (OCR), as the PDF's text does not have ${taken.length === 1 ? 'it' : 'them'}. Please check.`);
+  return filled;
+}
+
 async function findPhoto(extracted: ExtractedFile, ai: any): Promise<Blob | null> {
   const embedded = await pickBestPhoto(extracted.images);
   if (embedded) return canvasToJpeg(embedded);
@@ -152,6 +195,14 @@ async function findPhoto(extracted: ExtractedFile, ai: any): Promise<Blob | null
 
 export async function parseCvFile(file: File, mode: ParseMode): Promise<ParsedFile> {
   const extracted = await extractFile(file);
+  try {
+    return await readExtracted(file, mode, extracted);
+  } finally {
+    extracted.close?.();
+  }
+}
+
+async function readExtracted(file: File, mode: ParseMode, extracted: ExtractedFile): Promise<ParsedFile> {
   let text = extracted.text;
   const warnings = [...extracted.warnings];
   let ai: any = null;
@@ -194,7 +245,17 @@ export async function parseCvFile(file: File, mode: ParseMode): Promise<ParsedFi
   }
 
   const rules = text.trim() ? parseCvText(text, file.name) : parseCvText('', file.name);
-  const parsed = ai ? mergeAiResult(rules, ai, extracted.scanned ? '' : text) : rules;
+  let parsed = ai ? mergeAiResult(rules, ai, extracted.scanned ? '' : text) : rules;
+  // Without AI, a PDF whose name or contact details are pictures (a designed sidebar, a name in a fancy font)
+  // gets its first page read with OCR, for what the text left out.
+  if (!ai && !extracted.scanned && extracted.firstPageForOcr && needsPageOcr(parsed)) {
+    try {
+      const pageText = await ocrPages([await extracted.firstPageForOcr()]);
+      parsed = fillFromPageOcr(parsed, parseCvText(pageText, ''));
+    } catch (error) {
+      warnings.push(`The page image could not be read with OCR (${(error as Error).message}).`);
+    }
+  }
   parsed.warnings = [...warnings, ...parsed.warnings];
 
   const photo = await findPhoto(extracted, ai);

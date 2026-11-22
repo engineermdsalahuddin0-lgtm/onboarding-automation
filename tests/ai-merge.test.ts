@@ -55,3 +55,20 @@ describe('mergeAiResult', () => {
     expect(merged.total_experience_years).toBeNull();
   });
 });
+
+describe('fillFromPageOcr', () => {
+  it('fills only what the text layer left empty, and says so', async () => {
+    const { fillFromPageOcr, needsPageOcr } = await import('../src/lib/cv/index');
+    // The name was a picture; the text layer has the phone and education.
+    const fromText = parseCvText('Phone: 01711000008\nEducation\nBBA\nSample College\n2018');
+    expect(needsPageOcr(fromText)).toBe(true);
+    const fromOcr = parseCvText('RAFIQ AHMED\nPhone: 01711000009\nEmail: rafiq@example.com');
+    const filled = fillFromPageOcr(fromText, fromOcr);
+    expect(filled).toMatchObject({ full_name: 'Rafiq Ahmed', phone: '01711000008', email: 'rafiq@example.com' });
+    expect(filled.education).toEqual(fromText.education);
+    expect(filled.warnings.some((w) => w.startsWith('Name not found'))).toBe(false);
+    expect(filled.warnings.at(-1)).toMatch(/name, email were read from the page image/);
+    // An email alone missing is not worth reading the page for.
+    expect(needsPageOcr(parseCvText('Rafiq Ahmed\nPhone: 01711000008\nEducation\nBBA\nSample College\n2018'))).toBe(false);
+  });
+});

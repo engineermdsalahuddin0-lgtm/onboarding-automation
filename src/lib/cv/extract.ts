@@ -12,6 +12,13 @@ export interface ExtractedFile {
   /** Rendered pages to run OCR on when the file has no text layer. */
   ocrPages: HTMLCanvasElement[];
   warnings: string[];
+  /**
+   * The first page drawn for OCR, on request. For a PDF whose text layer lacks what the page shows: a name set
+   * as a picture, a sidebar that is one image. Only PDFs have it.
+   */
+  firstPageForOcr?: () => Promise<HTMLCanvasElement>;
+  /** Frees the open document. Call it once the file is read. */
+  close?: () => void;
 }
 
 const SCANNED_CHARS_PER_PAGE = 40;
@@ -316,9 +323,19 @@ async function extractPdf(file: Blob): Promise<ExtractedFile> {
       for (let i = 1; i < Math.min(doc.numPages, MAX_OCR_PAGES); i += 1) scannedPages.push(await renderPage(pages[i], ocrScale(pages[i])));
       if (doc.numPages > MAX_OCR_PAGES) warnings.push(`Only the first ${MAX_OCR_PAGES} scanned pages can be read without AI.`);
     }
-    return { text, images, firstPage, scanned, ocrPages: scannedPages, warnings };
-  } finally {
+    // The document stays open so page 1 can still be drawn for OCR if the text layer turns out to miss the name.
+    let closed = false;
+    return {
+      text, images, firstPage, scanned, ocrPages: scannedPages, warnings,
+      firstPageForOcr: () => renderPage(pages[0], ocrScale(pages[0])),
+      close: () => {
+        if (!closed) void doc.loadingTask.destroy();
+        closed = true;
+      },
+    };
+  } catch (error) {
     void doc.loadingTask.destroy();
+    throw error;
   }
 }
 
