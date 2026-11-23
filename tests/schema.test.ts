@@ -363,7 +363,7 @@ describe('pipeline rules in the database', () => {
 });
 
 describe('public application form', () => {
-  const payload = { full_name: 'Public Applicant', phone: '+880 1811-223344', email: 'A@Example.com', education: [{ degree: 'BBA' }], skills: ['Excel'] };
+  const payload = { full_name: 'Public Applicant', phone: '+880 1811-223344', email: 'A@Example.com', date_of_birth: '1996-03-14', gender: 'Female', education: [{ degree: 'BBA' }], skills: ['Excel'] };
   const submit = (code: string, data: object, path = 'applications/x/cv.pdf', website = '') =>
     as(null, `select submit_application($1, $2::jsonb, $3, null, 'cv.pdf', $4) as r`, [code, JSON.stringify(data), path, website]);
 
@@ -401,6 +401,13 @@ describe('public application form', () => {
     expect((await as(HR, `select id from candidates where bucket_id = $1`, [bucket])).length).toBe(1);
     await expect(submit('apply-3', { full_name: 'A B', phone: '123' })).rejects.toThrow(/mobile/);
     await expect(submit('apply-3', { phone: '01911223344' })).rejects.toThrow(/Name/);
+    // Date of birth and gender (Male or Female) are required.
+    await expect(submit('apply-3', { ...payload, phone: '01911223346', date_of_birth: '' })).rejects.toThrow(/Date of birth/);
+    await expect(submit('apply-3', { ...payload, phone: '01911223346', date_of_birth: 'not a date' })).rejects.toThrow(/Date of birth/);
+    await expect(submit('apply-3', { ...payload, phone: '01911223346', date_of_birth: '2999-01-01' })).rejects.toThrow(/Date of birth/);
+    await expect(submit('apply-3', { ...payload, phone: '01911223346', gender: '' })).rejects.toThrow(/gender/);
+    await expect(submit('apply-3', { ...payload, phone: '01911223346', gender: 'Other' })).rejects.toThrow(/gender/);
+    expect(await as(HR, `select date_of_birth::text as dob, gender from candidates where bucket_id = $1`, [bucket])).toEqual([{ dob: '1996-03-14', gender: 'Female' }]);
     await expect(submit('apply-3', { ...payload, phone: '01911223345' }, '../../secret')).rejects.toThrow(/file/);
   });
 
@@ -768,7 +775,7 @@ describe('desks and notifications', () => {
 
   it('reports applications from the company form and new job postings', async () => {
     await as(HR, `update cv_buckets set code = 'desk-form' where id = $1`, [bucket]);
-    await as(null, `select submit_application('desk-form', '{"full_name": "Form Person", "phone": "01799999999"}'::jsonb, '', '', '', '')`);
+    await as(null, `select submit_application('desk-form', '{"full_name": "Form Person", "phone": "01799999999", "date_of_birth": "1995-01-01", "gender": "Male"}'::jsonb, '', '', '', '')`);
     expect((await inbox(TAREQ)).some((n) => n.event === 'new_cvs' && n.actor_name === 'Company form' && n.subject === 'Form Person')).toBe(true);
     const [{ requisition_id }] = await as(HR, `select requisition_id from cv_buckets where id = $1`, [bucket]);
     await as(TAREQ, `insert into job_postings (requisition_id, media) values ($1, 'BDJobs')`, [requisition_id]);

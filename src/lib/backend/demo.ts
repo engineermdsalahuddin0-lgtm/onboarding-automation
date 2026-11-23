@@ -771,6 +771,9 @@ export function createDemoBackend(): Backend {
           const phone = normalizePhone(payload.phone ?? '');
           if ((payload.full_name ?? '').trim().length < 2) throw new BackendError('Name is required.');
           if (phone.length < 10) throw new BackendError('A valid mobile number is required.');
+          const dob = String(payload.date_of_birth ?? '');
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(dob) || dob < '1900-01-01' || dob > todayBd()) throw new BackendError('Date of birth is required.');
+          if (payload.gender !== 'Male' && payload.gender !== 'Female') throw new BackendError('Please choose Male or Female as gender.');
           const duplicate = table('candidates').some(
             (c) => c.bucket_id === bucket.id && normalizePhone(c.phone) === phone,
           );

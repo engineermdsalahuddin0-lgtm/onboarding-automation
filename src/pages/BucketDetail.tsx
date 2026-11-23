@@ -1,6 +1,7 @@
 import { AlertTriangle, ArrowLeft, Briefcase, Calendar, CalendarX, Check, ChevronDown, ClipboardPen, Copy, Download, ExternalLink, FileText, House, Link2, Mail, MapPin, MessageSquare, Pencil, Phone, PhoneCall, Search, Send, Trash2, Upload, UserPlus, UserX, Users, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { ApplyQrDialog, QrCode } from '../components/ApplyQr';
 import { BucketFormDialog } from '../components/BucketForm';
 import { DeleteBucketDialog } from '../components/DeleteBucketDialog';
 import { BulkUploadDialog } from '../components/BulkUpload';
@@ -40,7 +41,8 @@ type Modal =
   | { kind: 'edit' }
   | { kind: 'delete' }
   | { kind: 'panel' }
-  | { kind: 'report' };
+  | { kind: 'report' }
+  | { kind: 'qr' };
 
 const STAGES: { value: StageFilter; label: string; help: string; action?: string; short?: string }[] = [
   { value: 'all', label: 'All', help: 'Everyone in this bucket. Click a row to open the candidate\'s card and move them to the next step.' },
@@ -495,7 +497,9 @@ export function BucketDetailPage() {
     }
   }
 
-  const applyLink = `${location.origin}/apply/${bucket.code}`;  const maxSource = stats.sources[0]?.count ?? 1;
+  const applyLink = `${location.origin}/apply/${bucket.code}`;
+  const copyApplyLink = () => void copyText(applyLink).then(() => toast('Application form link copied.'));
+  const maxSource = stats.sources[0]?.count ?? 1;
   // Bulk actions follow the desks: screening for new CVs, the process team for the schedules.
   const canShortlist = canScreen ? selected.filter((c) => c.screening_status === 'new') : [];
   const canConfirmCall = canProcess ? selected.filter(can.confirmCall) : [];
@@ -522,12 +526,14 @@ export function BucketDetailPage() {
         titleActions={
           <>
             {canWrite && <ActionIcon label="Edit bucket" icon={Pencil} onClick={() => setModal({ kind: 'edit' })} />}
-            <ActionIcon data-tour="bucket-link" label="Copy application link" icon={Link2} onClick={() => void copyText(applyLink).then(() => toast('Application form link copied.'))} />            <ActionIcon label="Download" icon={Download} disabled={visible.length === 0} onClick={() => void downloadXlsx(visible, EXPORT_COLUMNS, `${bucket.designation}-${todayIso()}.xlsx`, bucket.designation)} />
+            <ActionIcon data-tour="bucket-link" label="Copy application link" icon={Link2} onClick={copyApplyLink} />
+            <ActionIcon label="Download" icon={Download} disabled={visible.length === 0} onClick={() => void downloadXlsx(visible, EXPORT_COLUMNS, `${bucket.designation}-${todayIso()}.xlsx`, bucket.designation)} />
             {canWrite && (isAdmin || items.length === 0) && <ActionIcon label="Delete bucket" icon={Trash2} onClick={() => setModal({ kind: 'delete' })} />}
             {canScreen && <ActionIcon data-tour="bucket-upload" label="Upload CVs" icon={Upload} primary onClick={() => setModal({ kind: 'upload' })} />}
             <HelpTip label="How to use this CV bucket">
               <span className="block">This is the CV bank for one position.</span>
               <span className="mt-1 block"><strong>Job application link</strong> (the chain icon): copy it and share it on Facebook, BDJobs or WhatsApp. Each applicant fills the form and arrives here as New.</span>
+              <span className="mt-1 block"><strong>QR code</strong> (on the right): click it to download or print an A4 sheet with the code, to hand to candidates who come in person.</span>
               <span className="mt-1 block"><strong>Accept or reject</strong>: click the New tile, open each CV, then press Select (accept and hand over) or Reject (with the reason). Tick several rows to do it for all of them at once.</span>
               <span className="mt-1 block">Every later step, from the call to joining, is done on the candidate's card.</span>
             </HelpTip>
@@ -547,6 +553,21 @@ export function BucketDetailPage() {
             })()}
             {requisition && <> · <Link className="underline" to="/requisitions">{requisition.ref_no}</Link> ({requisition.vacancies} vacanc{requisition.vacancies === 1 ? 'y' : 'ies'})</>}
           </>
+        }
+        actions={
+          // The form's QR code: opens the A4 sheet to download or print for candidates.
+          <button
+            type="button"
+            data-tour="bucket-qr"
+            onClick={() => setModal({ kind: 'qr' })}
+            className="group flex items-center gap-2.5 rounded-xl border border-line bg-surface p-1.5 pr-3 text-left hover:border-brand-600 hover:bg-hover"
+          >
+            <QrCode text={applyLink} className="size-16 rounded" />
+            <span className="text-xs leading-snug">
+              <span className="block font-semibold text-ink">Application QR</span>
+              <span className="block text-ink-soft group-hover:text-ink">Click to download<br />or print on A4</span>
+            </span>
+          </button>
         }
       />
 
@@ -872,6 +893,14 @@ export function BucketDetailPage() {
       {modal?.kind === 'reassign' && <HandoverDialog candidates={modal.candidates} mode="reassign" onClose={() => setModal(null)} onDone={() => setSelection(new Set())} />}
       {modal?.kind === 'upload' && <BulkUploadDialog bucketId={bucket.id} onClose={() => setModal(null)} />}
       {modal?.kind === 'edit' && <BucketFormDialog bucket={bucket} onClose={() => setModal(null)} />}
+      {modal?.kind === 'qr' && (
+        <ApplyQrDialog
+          details={{ link: applyLink, designation: bucket.designation, place: [bucket.department, bucket.company].filter(Boolean).join(' · ') }}
+          accepting={bucket.accepting_applications && bucket.status === 'Open'}
+          onCopy={copyApplyLink}
+          onClose={() => setModal(null)}
+        />
+      )}
       {modal?.kind === 'delete' && <DeleteBucketDialog bucket={bucket} onClose={() => setModal(null)} />}
       {modal?.kind === 'panel' && <InterviewPanelDialog bucket={bucket} onClose={() => setModal(null)} />}
       {modal?.kind === 'report' && <SelectionReportDialog bucket={bucket} onClose={() => setModal(null)} />}

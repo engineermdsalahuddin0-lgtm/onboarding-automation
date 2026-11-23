@@ -1408,6 +1408,19 @@ begin
     raise exception 'A valid mobile number is required.';
   end if;
 
+  -- Date of birth and gender are required on the company form.
+  begin
+    dob := nullif(p_payload ->> 'date_of_birth', '')::date;
+  exception when others then
+    dob := null;
+  end;
+  if dob is null or dob < date '1900-01-01' or dob > current_date then
+    raise exception 'Date of birth is required.';
+  end if;
+  if coalesce(p_payload ->> 'gender', '') not in ('Male', 'Female') then
+    raise exception 'Please choose Male or Female as gender.';
+  end if;
+
   if (select count(*) from public.candidates
       where bucket_id = bucket.id and parse_method = 'form' and received_at > now() - interval '1 hour') >= 300 then
     raise exception 'Too many applications right now. Please try again later.';
@@ -1426,12 +1439,6 @@ begin
   if coalesce(p_photo_path, '') <> '' and p_photo_path not like 'applications/%' then
     raise exception 'Invalid file reference.';
   end if;
-
-  begin
-    dob := nullif(p_payload ->> 'date_of_birth', '')::date;
-  exception when others then
-    dob := null;
-  end;
 
   insert into public.candidates (
     bucket_id, source, parse_method, full_name, email, phone, alt_phone, address, permanent_address,

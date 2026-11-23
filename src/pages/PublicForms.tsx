@@ -5,10 +5,12 @@ import fullLogo from '../assets/images/Bitopi_Logo_Final.png';
 import { Button, errorText, IconButton, Select, Spinner, TextArea, TextInput } from '../components/ui';
 import { backend } from '../lib/backend';
 import { extensionOf, MIME_BY_EXTENSION, parseCvFile } from '../lib/cv';
-import { classNames } from '../lib/format';
+import { genderOf } from '../lib/filters';
+import { classNames, todayIso } from '../lib/format';
 import type { EducationItem, ExperienceItem, PublicBucket, ReviewInvite } from '../types';
 
 const MAX_BYTES = 15 * 1024 * 1024;
+const GENDER_LABEL = { male: 'Male', female: 'Female', '': '' } as const;
 
 function PublicShell({ children }: { children: ReactNode }) {
   return (
@@ -110,7 +112,8 @@ export function ApplyPage() {
         take('father_name', parsed.father_name);
         take('mother_name', parsed.mother_name);
         take('spouse_name', parsed.spouse_name);
-        take('gender', parsed.gender);
+        // The form offers only Male and Female, so a CV's wording is turned into one of them, or left to choose.
+        take('gender', GENDER_LABEL[genderOf(parsed.gender ?? '')]);
         take('marital_status', parsed.marital_status);
         take('religion', parsed.religion);
         take('nationality', parsed.nationality);
@@ -219,10 +222,11 @@ export function ApplyPage() {
             <TextInput label="Mobile" name="tel" type="tel" autoComplete="tel" inputMode="tel" required pattern="[+0-9 \-]{10,20}" placeholder="01XXXXXXXXX" value={form.phone} onChange={(e) => set({ phone: e.target.value })} />
             <TextInput label="Email" name="email" type="email" autoComplete="email" value={form.email} onChange={(e) => set({ email: e.target.value })} />
             <TextInput label="Other mobile" type="tel" inputMode="tel" value={form.alt_phone} onChange={(e) => set({ alt_phone: e.target.value })} />
-            <TextInput label="Date of birth" type="date" autoComplete="bday" value={form.date_of_birth} onChange={(e) => set({ date_of_birth: e.target.value })} />
-            <Select label="Gender" value={form.gender} onChange={(e) => set({ gender: e.target.value })}>
+            <TextInput label="Date of birth" type="date" autoComplete="bday" required min="1940-01-01" max={todayIso()} value={form.date_of_birth} onChange={(e) => set({ date_of_birth: e.target.value })} />
+            <Select label="Gender" required value={form.gender} onChange={(e) => set({ gender: e.target.value })}>
               <option value="">Choose…</option>
-              {[...new Set(['Male', 'Female', 'Other', form.gender].filter(Boolean))].map((g) => <option key={g}>{g}</option>)}
+              <option>Male</option>
+              <option>Female</option>
             </Select>
             <TextInput label="Father's name" value={form.father_name} onChange={(e) => set({ father_name: e.target.value })} />
             <TextInput label="Mother's name" value={form.mother_name} onChange={(e) => set({ mother_name: e.target.value })} />
